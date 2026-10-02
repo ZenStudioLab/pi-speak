@@ -106,8 +106,8 @@ export class SpeechController {
       lines.push(...describeConfig(loaded.config, readApiKey(this.deps.env) !== undefined));
       const cache = this.cacheFor(loaded.config);
       try {
-        const usage = await cache.usage();
-        lines.push(`cache: ${cache.root} (${usage.files} clips, ${usage.bytes} bytes)`);
+        const stats = await cache.stats();
+        lines.push(`cache: ${cache.root} (${stats.files} clips, ${stats.bytes} bytes)`);
       } catch {
         lines.push(`cache: ${cache.root} (unreadable)`);
       }

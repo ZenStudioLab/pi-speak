@@ -1,6 +1,6 @@
 # Speak extension: compatibility record
 
-Recorded 2026-10-02 during `add-manual-speak-extension` tasks 1.2-1.4. Everything under "Verified" was checked by command or by reading the cited source in this session. Everything under "Unverified" is an assumption that must not be treated as fact.
+Recorded 2026-10-02 during `add-manual-speak-extension` tasks 1.2-1.4 and 4.4. Everything under "Verified" was checked by command or by reading the cited source in this session. Everything under "Unverified" is an assumption that must not be treated as fact.
 
 ## Host: Pi
 
@@ -21,7 +21,7 @@ Checked against the repo dev dependency (0.87.1) and the installed launcher rele
 | `AssistantMessage` | `role: "assistant"`, `content: (TextContent \| ThinkingContent \| ToolCall)[]`, `stopReason` |
 | `StopReason` | `"pending" \| "stop" \| "length" \| "toolUse" \| "error" \| "aborted" \| "deferred"` |
 
-Not documented, therefore still unverified: whether an awaited command handler blocks other commands in the terminal. The design returns from the handler immediately; task 4.4 qualifies this in a real terminal.
+Not documented by Pi: whether an awaited command handler blocks other commands in the terminal. The design returns from the handler immediately, and the real-terminal check below confirmed that `/speak status` and `/speak stop` are accepted while a clip is playing.
 
 Decisions derived from the declarations:
 
@@ -45,7 +45,7 @@ Verified from those pages:
 
 Unverified (the pages do not state them):
 
-- The response `Content-Type` for a successful MP3 response. The design accepts a successful response only if its content type is `audio/*` and the body is nonempty; if the real value differs, task 4.4 will show it and the artifacts must be amended rather than the check silently loosened.
+- The response `Content-Type` for a successful MP3 response. The design accepts a successful response only if its content type is `audio/*` and the body is nonempty; if the real value differs, the live check (task 4.5) will show it and the artifacts must be amended rather than the check silently loosened.
 - The exact error body shape for 401, 403, 404, 429, and 5xx.
 - Redirect behavior of the production origin. The extension rejects redirects regardless.
 - Pricing, the allowance that API calls consume, and whether the user's subscription covers API use of a cloned voice. None of this is used by the code.
@@ -69,4 +69,26 @@ Findings that change the implementation:
 - `-nostdin` is not a valid `ffplay` 6.1.1 option; it makes the player exit with code 1 immediately. Standard input is ignored through `spawn` stdio instead, and the documented argument list does not include `-nostdin`.
 - `pw-play` accepted an MP3 file and exited 0, but audibility was not verified, so it is not a documented default.
 
-This spike does not prove behavior inside the Pi terminal (display, input capture, output over the interface). That is task 4.4.
+This spike does not prove behavior inside the Pi terminal; the real-host checks below do.
+
+## Real-host checks on the installed Pi 0.99.2 (2026-10-02)
+
+Both checks loaded only this extension (`--no-extensions -e .../extensions/speak/index.ts`, `--offline`, `--no-session`, ephemeral XDG config and cache directories, no `ELEVENLABS_API_KEY`). Neither made a provider or model request.
+
+**RPC mode** (`pi --mode rpc`): `get_commands` listed `speak` with source `extension`. `/speak status` reported `not configured: no configuration file at ...`; `/speak text ...` reported that speech works only in the interactive terminal (so `ctx.mode` is `"rpc"` there); `/speak frobnicate` showed usage; `/speak summary` reported it is unavailable; `/speak stop` reported nothing active. No agent, turn, or message events occurred, nothing was written to the configuration or cache directories, and Pi exited on SIGTERM.
+
+**Interactive terminal** (Pi's TUI in a 120x40 pseudo-terminal), with a valid configuration and a locally generated 30 s tone placed in the cache under the exact key for the text `hello there`, so the request was a cache hit and no network or key was involved:
+
+| Step | Observed |
+| --- | --- |
+| `/speak status` | redacted configuration (`voice: ...7890`), `ELEVENLABS_API_KEY: missing`, cache of 1 clip, `job: idle` |
+| `/speak text hello there` | the real `ffplay` started; Pi's status line showed `speak: playing` |
+| `/speak status` while playing | answered immediately with `job: playing`, so the command handler returns promptly and the terminal stays responsive |
+| `/speak text second request` while playing | `Speech is already active. Use /speak stop to end it.`; no second player started |
+| `/speak stop` | `Stopped.`; the player ended; no `Playback failed` message; the status line cleared |
+| `/speak replay` then `/speak stop` | replayed from the cache without any request, then stopped |
+| Pi terminated by SIGTERM | no `ffplay` process remained |
+
+The captured screen contained no player output (no SDL, stream, or libav text) over Pi's interface.
+
+Not covered by these checks: speaking a real assistant answer in the terminal (needs a model turn), a real ElevenLabs response (content type, error bodies, voice and model acceptance, billing), and whether the tone was audible to a person. The live provider check is task 4.5.

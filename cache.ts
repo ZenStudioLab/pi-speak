@@ -160,8 +160,8 @@ export class AudioCache {
     return { clips, staleTemps };
   }
 
-  /** Count and total size of valid clips, for status output. */
-  async usage(): Promise<{ files: number; bytes: number }> {
+  /** Count and total size of cached clips, for status output (not usage accounting). */
+  async stats(): Promise<{ files: number; bytes: number }> {
     const { clips } = await this.listClips();
     return { files: clips.length, bytes: clips.reduce((sum, clip) => sum + clip.size, 0) };
   }
