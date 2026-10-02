@@ -160,6 +160,12 @@ export class AudioCache {
     return { clips, staleTemps };
   }
 
+  /** Count and total size of valid clips, for status output. */
+  async usage(): Promise<{ files: number; bytes: number }> {
+    const { clips } = await this.listClips();
+    return { files: clips.length, bytes: clips.reduce((sum, clip) => sum + clip.size, 0) };
+  }
+
   /** Removes expired clips, then oldest clips until under the size cap. Never removes `protectedPath`. */
   async evict(protectedPath?: string): Promise<string[]> {
     const { clips, staleTemps } = await this.listClips();

@@ -1,0 +1,293 @@
+import { startPlayer, resolveExecutable, type PlayerHandle, type SpawnFn } from "./audio.ts";
+import { AudioCache, cacheKey, clipExtension } from "./cache.ts";
+import {
+  API_KEY_ENV,
+  cacheDir,
+  describeConfig,
+  loadConfig,
+  readApiKey,
+  type Env,
+  type SpeakConfig,
+} from "./config.ts";
+import { redact, synthesize } from "./elevenlabs.ts";
+import { NORMALIZER_VERSION, checkLength } from "./text.ts";
+
+export interface SpeakUi {
+  notify(message: string, level?: "info" | "warning" | "error"): void;
+  setStatus?(key: string, text: string | undefined): void;
+}
+
+export interface SpeakDeps {
+  env: Env;
+  fetchFn: typeof fetch;
+  spawnFn?: SpawnFn;
+  now: () => number;
+  home?: string;
+  readFile?: (path: string) => Promise<string>;
+}
+
+type Phase = "preparing" | "generating" | "playing";
+
+interface Job {
+  controller: AbortController;
+  phase: Phase;
+  player?: PlayerHandle;
+  ui: SpeakUi;
+}
+
+interface Clip {
+  key: string;
+  extension: string;
+}
+
+const STATUS_KEY = "speak";
+
+const ignoreFailure = (work: Promise<unknown>): Promise<void> =>
+  work.then(
+    () => undefined,
+    () => undefined,
+  );
+
+/**
+ * Owns the single speech job of this Pi process. A job is claimed synchronously, so two quick
+ * commands cannot both pass the "already active" check. Every continuation re-checks that its job
+ * is still the current one, so a cancelled job can never start playback or touch a newer job.
+ */
+export class SpeechController {
+  private readonly deps: SpeakDeps;
+  private job: Job | undefined;
+  private lastClip: Clip | undefined;
+  private task: Promise<void> = Promise.resolve();
+
+  constructor(deps: SpeakDeps) {
+    this.deps = deps;
+  }
+
+  /** Resolves when the most recently started job has ended. Used by tests and shutdown paths. */
+  whenIdle(): Promise<void> {
+    return this.task;
+  }
+
+  speak(text: string, ui: SpeakUi): void {
+    const job = this.begin(ui);
+    if (job) this.task = this.run(job, () => this.generateAndPlay(job, text));
+  }
+
+  replay(ui: SpeakUi): void {
+    const clip = this.lastClip;
+    if (!clip) {
+      ui.notify("Nothing to replay in this session.", "info");
+      return;
+    }
+    const job = this.begin(ui);
+    if (job) this.task = this.run(job, () => this.replayClip(job, clip));
+  }
+
+  stop(ui: SpeakUi): void {
+    const job = this.job;
+    if (!job) {
+      ui.notify("Nothing is being generated or played.", "info");
+      return;
+    }
+    this.cancel(job);
+    ui.notify("Stopped.", "info");
+  }
+
+  /** Lifecycle cleanup: cancel this extension's own work and forget the previous session's clip. */
+  resetSession(): void {
+    if (this.job) this.cancel(this.job);
+    this.lastClip = undefined;
+  }
+
+  async status(ui: SpeakUi): Promise<void> {
+    const loaded = await loadConfig(this.deps.env, this.deps.readFile, this.deps.home);
+    const lines: string[] = [];
+    if (loaded.ok) {
+      lines.push(...describeConfig(loaded.config, readApiKey(this.deps.env) !== undefined));
+      const cache = this.cacheFor(loaded.config);
+      try {
+        const usage = await cache.usage();
+        lines.push(`cache: ${cache.root} (${usage.files} clips, ${usage.bytes} bytes)`);
+      } catch {
+        lines.push(`cache: ${cache.root} (unreadable)`);
+      }
+    } else {
+      lines.push(`not configured: ${loaded.problem}`);
+    }
+    lines.push(`job: ${this.job ? this.job.phase : "idle"}`);
+    ui.notify(lines.join("\n"), "info");
+  }
+
+  private begin(ui: SpeakUi): Job | undefined {
+    if (this.job) {
+      ui.notify("Speech is already active. Use /speak stop to end it.", "warning");
+      return undefined;
+    }
+    const job: Job = { controller: new AbortController(), phase: "preparing", ui };
+    this.job = job;
+    this.show(job, "preparing");
+    return job;
+  }
+
+  private live(job: Job): boolean {
+    return this.job === job;
+  }
+
+  private show(job: Job, text: string | undefined): void {
+    try {
+      job.ui.setStatus?.(STATUS_KEY, text === undefined ? undefined : `speak: ${text}`);
+    } catch {
+      return; // A replaced session's UI may refuse updates; the status line is cosmetic.
+    }
+  }
+
+  private cancel(job: Job): void {
+    if (this.job === job) this.job = undefined;
+    job.controller.abort();
+    job.player?.stop();
+    this.show(job, undefined);
+  }
+
+  private async run(job: Job, work: () => Promise<void>): Promise<void> {
+    try {
+      await work();
+    } catch (error) {
+      if (this.live(job)) job.ui.notify(`Speech failed: ${this.describeError(error)}`, "error");
+    } finally {
+      // Only the current job may release the claim or touch the status line; a cancelled job has
+      // already cleaned up and must not disturb whatever replaced it.
+      if (this.job === job) {
+        this.job = undefined;
+        this.show(job, undefined);
+      }
+    }
+  }
+
+  private describeError(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    return redact(message, readApiKey(this.deps.env) ?? "").slice(0, 200);
+  }
+
+  private cacheFor(config: SpeakConfig): AudioCache {
+    return new AudioCache({
+      root: cacheDir(this.deps.env, this.deps.home),
+      maxBytes: config.cache.maxBytes,
+      ttlDays: config.cache.ttlDays,
+      now: this.deps.now,
+    });
+  }
+
+  /** Config, then the length limit, then the player: every check runs before any billable request. */
+  private async preflight(job: Job, text?: string): Promise<SpeakConfig | undefined> {
+    const loaded = await loadConfig(this.deps.env, this.deps.readFile, this.deps.home);
+    if (!this.live(job)) return undefined;
+    if (!loaded.ok) {
+      job.ui.notify(`Speech is not configured: ${loaded.problem}`, "warning");
+      return undefined;
+    }
+    const config = loaded.config;
+    if (text !== undefined) {
+      const length = checkLength(text, config.hardLimitChars);
+      if (!length.ok) {
+        job.ui.notify(
+          `That text is ${length.length} characters and the limit is ${length.limit}. Nothing was sent. Use /speak text with a shorter passage.`,
+          "warning",
+        );
+        return undefined;
+      }
+    }
+    const player = await resolveExecutable(config.player.command, this.deps.env);
+    if (!this.live(job)) return undefined;
+    if (!player) {
+      job.ui.notify(
+        `The audio player "${config.player.command}" was not found. Install it or set player.command in the configuration. Nothing was sent.`,
+        "warning",
+      );
+      return undefined;
+    }
+    return config;
+  }
+
+  private async generateAndPlay(job: Job, text: string): Promise<void> {
+    const config = await this.preflight(job, text);
+    if (!config) return;
+    const cache = this.cacheFor(config);
+    const clip: Clip = {
+      key: cacheKey({
+        text,
+        provider: config.provider,
+        voiceId: config.voiceId,
+        modelId: config.modelId,
+        outputFormat: config.outputFormat,
+        voiceRevision: config.voiceRevision,
+        normalizerVersion: NORMALIZER_VERSION,
+      }),
+      extension: clipExtension(config.outputFormat),
+    };
+
+    let path = await cache.get(clip.key, clip.extension);
+    if (!this.live(job)) return;
+    if (!path) {
+      const apiKey = readApiKey(this.deps.env);
+      if (!apiKey) {
+        job.ui.notify(`${API_KEY_ENV} is not set. Nothing was sent.`, "warning");
+        return;
+      }
+      job.phase = "generating";
+      this.show(job, "generating");
+      const result = await synthesize(
+        {
+          text,
+          voiceId: config.voiceId,
+          modelId: config.modelId,
+          outputFormat: config.outputFormat,
+          apiKey,
+          timeoutMs: config.requestTimeoutMs,
+          signal: job.controller.signal,
+        },
+        this.deps.fetchFn,
+      );
+      if (!this.live(job)) return;
+      if (!result.ok) {
+        if (result.kind !== "cancelled") job.ui.notify(result.message, "error");
+        return;
+      }
+      path = await cache.put(clip.key, clip.extension, result.bytes);
+      if (!this.live(job)) return;
+    }
+    await this.playClip(job, config, cache, clip, path);
+  }
+
+  private async replayClip(job: Job, clip: Clip): Promise<void> {
+    const config = await this.preflight(job);
+    if (!config) return;
+    const cache = this.cacheFor(config);
+    const path = await cache.get(clip.key, clip.extension);
+    if (!this.live(job)) return;
+    if (!path) {
+      this.lastClip = undefined;
+      job.ui.notify("The last clip is no longer in the cache, so there is nothing to replay.", "warning");
+      return;
+    }
+    await this.playClip(job, config, cache, clip, path);
+  }
+
+  private async playClip(job: Job, config: SpeakConfig, cache: AudioCache, clip: Clip, path: string): Promise<void> {
+    this.lastClip = clip;
+    // Eviction is housekeeping; failing to prune must not block playback.
+    await ignoreFailure(cache.evict(path));
+    if (!this.live(job)) return;
+    job.phase = "playing";
+    this.show(job, "playing");
+    const player = startPlayer({
+      command: config.player.command,
+      args: config.player.args,
+      file: path,
+      env: this.deps.env,
+      spawnFn: this.deps.spawnFn,
+    });
+    job.player = player;
+    const exit = await player.done;
+    if (exit.kind === "failed" && this.live(job)) job.ui.notify(`Playback failed: ${exit.detail}`, "error");
+  }
+}
