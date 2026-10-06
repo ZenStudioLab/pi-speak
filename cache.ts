@@ -1,5 +1,14 @@
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, readdir, rename, unlink, utimes, writeFile, chmod } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  readdir,
+  rename,
+  unlink,
+  utimes,
+  writeFile,
+  chmod,
+} from "node:fs/promises";
 import { join } from "node:path";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -15,6 +24,7 @@ export interface CacheKeyInput {
   outputFormat: string;
   voiceRevision: number;
   normalizerVersion: number;
+  speechLocale?: string;
 }
 
 /**
@@ -31,6 +41,7 @@ export function cacheKey(input: CacheKeyInput): string {
     ["voiceSettings", null],
     ["normalizerVersion", input.normalizerVersion],
     ["voiceRevision", input.voiceRevision],
+    ["speechLocale", input.speechLocale ?? "original"],
   ]);
   return createHash("sha256").update(canonical).digest("hex");
 }
@@ -58,7 +69,8 @@ interface Clip {
   mtimeMs: number;
 }
 
-const isEnoent = (error: unknown): boolean => (error as NodeJS.ErrnoException)?.code === "ENOENT";
+const isEnoent = (error: unknown): boolean =>
+  (error as NodeJS.ErrnoException)?.code === "ENOENT";
 
 async function unlinkIfPresent(path: string): Promise<void> {
   try {
@@ -77,7 +89,9 @@ export class AudioCache {
   constructor(options: CacheOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
-    this.uid = options.uid ?? (typeof process.getuid === "function" ? process.getuid() : undefined);
+    this.uid =
+      options.uid ??
+      (typeof process.getuid === "function" ? process.getuid() : undefined);
   }
 
   get root(): string {
@@ -109,17 +123,25 @@ export class AudioCache {
       if (isEnoent(error)) return undefined;
       throw error;
     }
-    if (!info.isFile() || info.isSymbolicLink() || info.size === 0) return undefined;
+    if (!info.isFile() || info.isSymbolicLink() || info.size === 0)
+      return undefined;
     const when = new Date(this.now());
     await utimes(path, when, when);
     return path;
   }
 
   /** Writes through a unique private temporary file and renames it into place. */
-  async put(key: string, extension: string, bytes: Uint8Array): Promise<string> {
+  async put(
+    key: string,
+    extension: string,
+    bytes: Uint8Array,
+  ): Promise<string> {
     await this.ensureDir();
     const path = this.pathFor(key, extension);
-    const temp = join(this.options.root, `${key}.${randomBytes(6).toString("hex")}.tmp`);
+    const temp = join(
+      this.options.root,
+      `${key}.${randomBytes(6).toString("hex")}.tmp`,
+    );
     try {
       await writeFile(temp, bytes, { flag: "wx", mode: 0o600 });
       await rename(temp, path);
@@ -163,7 +185,10 @@ export class AudioCache {
   /** Count and total size of cached clips, for status output (not usage accounting). */
   async stats(): Promise<{ files: number; bytes: number }> {
     const { clips } = await this.listClips();
-    return { files: clips.length, bytes: clips.reduce((sum, clip) => sum + clip.size, 0) };
+    return {
+      files: clips.length,
+      bytes: clips.reduce((sum, clip) => sum + clip.size, 0),
+    };
   }
 
   /** Removes expired clips, then oldest clips until under the size cap. Never removes `protectedPath`. */
@@ -179,7 +204,8 @@ export class AudioCache {
     const cutoff = this.now() - this.options.ttlDays * DAY_MS;
     let remaining: Clip[] = [];
     for (const clip of clips) {
-      if (clip.path !== protectedPath && clip.mtimeMs < cutoff) await remove(clip.path);
+      if (clip.path !== protectedPath && clip.mtimeMs < cutoff)
+        await remove(clip.path);
       else remaining.push(clip);
     }
     let total = remaining.reduce((sum, clip) => sum + clip.size, 0);

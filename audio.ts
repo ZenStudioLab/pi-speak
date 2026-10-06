@@ -26,16 +26,26 @@ const isExecutable = (path: string): Promise<boolean> =>
   );
 
 /** Finds an executable file by absolute path or on PATH, without running anything. */
-export async function resolveExecutable(command: string, env: Env): Promise<string | undefined> {
+export async function resolveExecutable(
+  command: string,
+  env: Env,
+): Promise<string | undefined> {
   const candidates = command.includes("/")
     ? [command]
-    : (env.PATH ?? "").split(delimiter).filter(Boolean).map((dir) => join(dir, command));
-  for (const candidate of candidates) if (await isExecutable(candidate)) return candidate;
+    : (env.PATH ?? "")
+        .split(delimiter)
+        .filter(Boolean)
+        .map((dir) => join(dir, command));
+  for (const candidate of candidates)
+    if (await isExecutable(candidate)) return candidate;
   return undefined;
 }
 
 /** Substitutes the audio path for the single `{file}` element; the path stays one argument. */
-export function playerArgs(template: readonly string[], file: string): string[] {
+export function playerArgs(
+  template: readonly string[],
+  file: string,
+): string[] {
   return template.map((arg) => (arg === "{file}" ? file : arg));
 }
 
@@ -49,7 +59,8 @@ export function playerEnvironment(env: Env): NodeJS.ProcessEnv {
 // eslint-disable-next-line no-control-regex
 const NOT_PRINTABLE = /[\u0000-\u001f\u007f-\u009f]+/g;
 
-const sanitize = (text: string): string => text.replace(NOT_PRINTABLE, " ").trim().slice(0, 200);
+const sanitize = (text: string): string =>
+  text.replace(NOT_PRINTABLE, " ").trim().slice(0, 200);
 
 export function startPlayer(options: {
   command: string;
@@ -61,20 +72,31 @@ export function startPlayer(options: {
   killGraceMs?: number;
 }): PlayerHandle {
   const spawnFn = options.spawnFn ?? nodeSpawn;
-  const child = spawnFn(options.command, playerArgs(options.args, options.file), {
-    shell: false,
-    stdio: ["ignore", "ignore", "pipe"],
-    env: playerEnvironment(options.env),
-  });
+  const child = spawnFn(
+    options.command,
+    playerArgs(options.args, options.file),
+    {
+      shell: false,
+      stdio: ["ignore", "ignore", "pipe"],
+      env: playerEnvironment(options.env),
+    },
+  );
   let stopped = false;
   let stderr = "";
   child.stderr?.on("data", (chunk: Buffer) => {
-    if (stderr.length < MAX_STDERR_CHARS) stderr += chunk.toString("utf8").slice(0, MAX_STDERR_CHARS - stderr.length);
+    if (stderr.length < MAX_STDERR_CHARS)
+      stderr += chunk
+        .toString("utf8")
+        .slice(0, MAX_STDERR_CHARS - stderr.length);
   });
 
   const done = new Promise<PlayerExit>((resolve) => {
     child.once("error", (error: Error) =>
-      resolve(stopped ? { kind: "stopped" } : { kind: "failed", detail: sanitize(error.message) }),
+      resolve(
+        stopped
+          ? { kind: "stopped" }
+          : { kind: "failed", detail: sanitize(error.message) },
+      ),
     );
     child.once("exit", (code: number | null, signal: NodeJS.Signals | null) => {
       if (stopped) return resolve({ kind: "stopped" });
@@ -91,7 +113,10 @@ export function startPlayer(options: {
       if (stopped) return;
       stopped = true;
       child.kill("SIGTERM");
-      const timer = setTimeout(() => child.kill("SIGKILL"), options.killGraceMs ?? KILL_GRACE_MS);
+      const timer = setTimeout(
+        () => child.kill("SIGKILL"),
+        options.killGraceMs ?? KILL_GRACE_MS,
+      );
       timer.unref();
       void done.then(() => clearTimeout(timer));
     },

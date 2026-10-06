@@ -4,7 +4,8 @@ export const NORMALIZER_VERSION = 1;
 export const TABLE_NOTICE = "A table is available in the text response.";
 
 // eslint-disable-next-line no-control-regex
-const ANSI = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
+const ANSI =
+  /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
 
@@ -37,7 +38,12 @@ function stripCodeBlocks(lines: string[]): string[] {
   for (const line of lines) {
     if (fence) {
       const close = FENCE.exec(line);
-      if (close && close[1][0] === fence.char && close[1].length >= fence.length && line.trim() === close[1])
+      if (
+        close &&
+        close[1][0] === fence.char &&
+        close[1].length >= fence.length &&
+        line.trim() === close[1]
+      )
         fence = undefined;
       continue;
     }
@@ -81,9 +87,12 @@ function replaceTables(lines: string[]): string[] {
 
 function stripInlineMarkup(text: string): string {
   const inline: string[] = [];
-  const hold = (_match: string, code: string) => `\u0000${inline.push(code) - 1}\u0000`;
+  const hold = (_match: string, code: string) =>
+    `\u0000${inline.push(code) - 1}\u0000`;
   return text
-    .replace(/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/g, (m, _t, code: string) => hold(m, code.trim()))
+    .replace(/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/g, (m, _t, code: string) =>
+      hold(m, code.trim()),
+    )
     .replace(/<!--[\s\S]*?-->/g, "")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/!\[[^\]]*\]\[[^\]]*\]/g, "")
@@ -91,7 +100,10 @@ function stripInlineMarkup(text: string): string {
     .replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1")
     .replace(/<\/?[A-Za-z][^>]*>/g, "")
     .replace(/\bhttps?:\/\/[^\s)>\]]+/g, "")
-    .replace(/\*\*(\S(?:[\s\S]*?\S)?)\*\*|__(\S(?:[\s\S]*?\S)?)__/g, (_m, a, b) => a ?? b)
+    .replace(
+      /\*\*(\S(?:[\s\S]*?\S)?)\*\*|__(\S(?:[\s\S]*?\S)?)__/g,
+      (_m, a, b) => a ?? b,
+    )
     .replace(/(^|[^\w*])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![\w*])/g, "$1$2")
     .replace(/(^|[^\w])_(?!\s)([^_\n]+?)(?<!\s)_(?=[^\w]|$)/g, "$1$2")
     .replace(/~~(\S(?:[\s\S]*?\S)?)~~/g, "$1")
@@ -104,7 +116,9 @@ function stripInlineMarkup(text: string): string {
  * Never summarizes. Returns an empty string when no speakable prose remains.
  */
 export function prepareAnswerText(markdown: string): string {
-  const lines = replaceTables(stripCodeBlocks(stripTerminalControls(markdown).split(/\r?\n/)));
+  const lines = replaceTables(
+    stripCodeBlocks(stripTerminalControls(markdown).split(/\r?\n/)),
+  );
   const cleaned = lines
     .map((line) =>
       stripInlineMarkup(
@@ -121,7 +135,9 @@ export function prepareAnswerText(markdown: string): string {
   return /[\p{L}\p{N}]/u.test(cleaned) ? cleaned : "";
 }
 
-export type LengthCheck = { ok: true } | { ok: false; length: number; limit: number };
+export type LengthCheck =
+  | { ok: true }
+  | { ok: false; length: number; limit: number };
 
 /** Counts Unicode code points. Text longer than the limit is refused, never truncated. */
 export function checkLength(text: string, limit: number): LengthCheck {

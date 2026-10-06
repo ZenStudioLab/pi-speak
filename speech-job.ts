@@ -1,4 +1,10 @@
-import { startPlayer, resolveExecutable, type PlayerHandle, type SpawnFn } from "./audio.ts";
+import { randomUUID } from "node:crypto";
+import {
+  startPlayer,
+  resolveExecutable,
+  type PlayerHandle,
+  type SpawnFn,
+} from "./audio.ts";
 import { AudioCache, cacheKey, clipExtension } from "./cache.ts";
 import {
   API_KEY_ENV,
@@ -10,11 +16,18 @@ import {
   type SpeakConfig,
 } from "./config.ts";
 import { redact, synthesize } from "./elevenlabs.ts";
+import { fetchQuota } from "./quota.ts";
 import { NORMALIZER_VERSION, checkLength } from "./text.ts";
+import { Translator, type TranslationRegistry } from "./translation.ts";
+import {
+  TranslationError,
+  type TranslationFailureRecord,
+} from "./translation-failure.ts";
 
 export interface SpeakUi {
   notify(message: string, level?: "info" | "warning" | "error"): void;
   setStatus?(key: string, text: string | undefined): void;
+  setWidget?(key: string, content: string[] | undefined): void;
 }
 
 export interface SpeakDeps {
@@ -26,13 +39,14 @@ export interface SpeakDeps {
   readFile?: (path: string) => Promise<string>;
 }
 
-type Phase = "preparing" | "generating" | "playing";
+type Phase = "preparing" | "translating" | "generating" | "playing";
 
 interface Job {
   controller: AbortController;
   phase: Phase;
   player?: PlayerHandle;
   ui: SpeakUi;
+  recordFailure?: (record: TranslationFailureRecord) => void;
 }
 
 interface Clip {
@@ -41,6 +55,13 @@ interface Clip {
 }
 
 const STATUS_KEY = "speak";
+const PROGRESS_KEY = "speak-progress";
+const PHASE_LABELS: Record<Phase, string> = {
+  preparing: "Preparing",
+  translating: "Translating",
+  generating: "ElevenLabs",
+  playing: "Playing",
+};
 
 const ignoreFailure = (work: Promise<unknown>): Promise<void> =>
   work.then(
@@ -55,22 +76,38 @@ const ignoreFailure = (work: Promise<unknown>): Promise<void> =>
  */
 export class SpeechController {
   private readonly deps: SpeakDeps;
+  private readonly translator = new Translator();
   private job: Job | undefined;
   private lastClip: Clip | undefined;
   private task: Promise<void> = Promise.resolve();
+  private quotaRequest: AbortController | undefined;
+  private quotaTask: Promise<void> = Promise.resolve();
 
   constructor(deps: SpeakDeps) {
     this.deps = deps;
   }
 
-  /** Resolves when the most recently started job has ended. Used by tests and shutdown paths. */
-  whenIdle(): Promise<void> {
-    return this.task;
+  /** Resolves when the current speech and quota work have ended. */
+  async whenIdle(): Promise<void> {
+    await Promise.all([this.task, this.quotaTask]);
   }
 
   speak(text: string, ui: SpeakUi): void {
     const job = this.begin(ui);
     if (job) this.task = this.run(job, () => this.generateAndPlay(job, text));
+  }
+
+  speakLocalized(
+    text: string,
+    ui: SpeakUi,
+    registry: TranslationRegistry | undefined,
+    recordFailure?: (record: TranslationFailureRecord) => void,
+  ): void {
+    const job = this.begin(ui, recordFailure);
+    if (job)
+      this.task = this.run(job, () =>
+        this.generateAndPlay(job, text, true, registry),
+      );
   }
 
   replay(ui: SpeakUi): void {
@@ -97,17 +134,62 @@ export class SpeechController {
   resetSession(): void {
     if (this.job) this.cancel(this.job);
     this.lastClip = undefined;
+    this.translator.clear();
+    this.quotaRequest?.abort();
+    this.quotaRequest = undefined;
+  }
+
+  /** Quota is independent of speech; do not block Pi's stop command while waiting. */
+  quota(ui: SpeakUi): void {
+    if (this.quotaRequest) {
+      ui.notify("A quota lookup is already pending.", "info");
+      return;
+    }
+    const apiKey = readApiKey(this.deps.env);
+    if (!apiKey) {
+      ui.notify(
+        `${API_KEY_ENV} is not set. Quota was not requested.`,
+        "warning",
+      );
+      return;
+    }
+    const request = new AbortController();
+    this.quotaRequest = request;
+    ui.notify("Checking ElevenLabs quota...", "info");
+    this.quotaTask = fetchQuota(apiKey, this.deps.fetchFn, request.signal)
+      .then((result) => {
+        if (this.quotaRequest === request)
+          ui.notify(
+            redact(result.message, apiKey),
+            result.ok ? "info" : "error",
+          );
+      })
+      .catch(() => undefined) // A replaced UI must not create an unhandled rejection.
+      .finally(() => {
+        if (this.quotaRequest === request) this.quotaRequest = undefined;
+      });
   }
 
   async status(ui: SpeakUi): Promise<void> {
-    const loaded = await loadConfig(this.deps.env, this.deps.readFile, this.deps.home);
+    const loaded = await loadConfig(
+      this.deps.env,
+      this.deps.readFile,
+      this.deps.home,
+    );
     const lines: string[] = [];
     if (loaded.ok) {
-      lines.push(...describeConfig(loaded.config, readApiKey(this.deps.env) !== undefined));
+      lines.push(
+        ...describeConfig(
+          loaded.config,
+          readApiKey(this.deps.env) !== undefined,
+        ),
+      );
       const cache = this.cacheFor(loaded.config);
       try {
         const stats = await cache.stats();
-        lines.push(`cache: ${cache.root} (${stats.files} clips, ${stats.bytes} bytes)`);
+        lines.push(
+          `cache: ${cache.root} (${stats.files} clips, ${stats.bytes} bytes)`,
+        );
       } catch {
         lines.push(`cache: ${cache.root} (unreadable)`);
       }
@@ -118,12 +200,23 @@ export class SpeechController {
     ui.notify(lines.join("\n"), "info");
   }
 
-  private begin(ui: SpeakUi): Job | undefined {
+  private begin(
+    ui: SpeakUi,
+    recordFailure?: (record: TranslationFailureRecord) => void,
+  ): Job | undefined {
     if (this.job) {
-      ui.notify("Speech is already active. Use /speak stop to end it.", "warning");
+      ui.notify(
+        "Speech is already active. Use /speak stop to end it.",
+        "warning",
+      );
       return undefined;
     }
-    const job: Job = { controller: new AbortController(), phase: "preparing", ui };
+    const job: Job = {
+      controller: new AbortController(),
+      phase: "preparing",
+      ui,
+      recordFailure,
+    };
     this.job = job;
     this.show(job, "preparing");
     return job;
@@ -133,9 +226,20 @@ export class SpeechController {
     return this.job === job;
   }
 
-  private show(job: Job, text: string | undefined): void {
+  private show(job: Job, text: Phase | undefined): void {
     try {
-      job.ui.setStatus?.(STATUS_KEY, text === undefined ? undefined : `speak: ${text}`);
+      job.ui.setWidget?.(
+        PROGRESS_KEY,
+        text === undefined ? undefined : [`Speech: ${PHASE_LABELS[text]}...`],
+      );
+    } catch {
+      // Progress is cosmetic; a UI failure must not block speech or cancellation.
+    }
+    try {
+      job.ui.setStatus?.(
+        STATUS_KEY,
+        text === undefined ? undefined : `speak: ${text}`,
+      );
     } catch {
       return; // A replaced session's UI may refuse updates; the status line is cosmetic.
     }
@@ -152,7 +256,27 @@ export class SpeechController {
     try {
       await work();
     } catch (error) {
-      if (this.live(job)) job.ui.notify(`Speech failed: ${this.describeError(error)}`, "error");
+      if (this.live(job)) {
+        let reference = "";
+        if (
+          error instanceof TranslationError &&
+          error.failure &&
+          job.recordFailure
+        ) {
+          const diagnosticId = randomUUID();
+          try {
+            job.recordFailure({ ...error.failure, diagnosticId });
+            reference = ` [diagnostic ${diagnosticId}]`;
+          } catch {
+            // Persistence is best effort; never replace or hide the speech failure.
+          }
+        }
+        if (this.live(job))
+          job.ui.notify(
+            `Speech failed: ${this.describeError(error)}${reference}`,
+            "error",
+          );
+      }
     } finally {
       // Only the current job may release the claim or touch the status line; a cancelled job has
       // already cleaned up and must not disturb whatever replaced it.
@@ -178,8 +302,15 @@ export class SpeechController {
   }
 
   /** Config, then the length limit, then the player: every check runs before any billable request. */
-  private async preflight(job: Job, text?: string): Promise<SpeakConfig | undefined> {
-    const loaded = await loadConfig(this.deps.env, this.deps.readFile, this.deps.home);
+  private async preflight(
+    job: Job,
+    text?: string,
+  ): Promise<SpeakConfig | undefined> {
+    const loaded = await loadConfig(
+      this.deps.env,
+      this.deps.readFile,
+      this.deps.home,
+    );
     if (!this.live(job)) return undefined;
     if (!loaded.ok) {
       job.ui.notify(`Speech is not configured: ${loaded.problem}`, "warning");
@@ -196,7 +327,10 @@ export class SpeechController {
         return undefined;
       }
     }
-    const player = await resolveExecutable(config.player.command, this.deps.env);
+    const player = await resolveExecutable(
+      config.player.command,
+      this.deps.env,
+    );
     if (!this.live(job)) return undefined;
     if (!player) {
       job.ui.notify(
@@ -208,9 +342,34 @@ export class SpeechController {
     return config;
   }
 
-  private async generateAndPlay(job: Job, text: string): Promise<void> {
+  private async generateAndPlay(
+    job: Job,
+    text: string,
+    localized = false,
+    registry?: TranslationRegistry,
+  ): Promise<void> {
     const config = await this.preflight(job, text);
     if (!config) return;
+    if (localized) {
+      if (!readApiKey(this.deps.env)) {
+        job.ui.notify(
+          `${API_KEY_ENV} is not set. Nothing was sent.`,
+          "warning",
+        );
+        return;
+      }
+      text = await this.translator.render({
+        text,
+        config,
+        registry,
+        signal: job.controller.signal,
+        onStart: () => {
+          job.phase = "translating";
+          this.show(job, "translating");
+        },
+      });
+      if (!this.live(job)) return;
+    }
     const cache = this.cacheFor(config);
     const clip: Clip = {
       key: cacheKey({
@@ -221,6 +380,7 @@ export class SpeechController {
         outputFormat: config.outputFormat,
         voiceRevision: config.voiceRevision,
         normalizerVersion: NORMALIZER_VERSION,
+        speechLocale: localized ? config.locale : "original",
       }),
       extension: clipExtension(config.outputFormat),
     };
@@ -230,7 +390,10 @@ export class SpeechController {
     if (!path) {
       const apiKey = readApiKey(this.deps.env);
       if (!apiKey) {
-        job.ui.notify(`${API_KEY_ENV} is not set. Nothing was sent.`, "warning");
+        job.ui.notify(
+          `${API_KEY_ENV} is not set. Nothing was sent.`,
+          "warning",
+        );
         return;
       }
       job.phase = "generating";
@@ -266,13 +429,22 @@ export class SpeechController {
     if (!this.live(job)) return;
     if (!path) {
       this.lastClip = undefined;
-      job.ui.notify("The last clip is no longer in the cache, so there is nothing to replay.", "warning");
+      job.ui.notify(
+        "The last clip is no longer in the cache, so there is nothing to replay.",
+        "warning",
+      );
       return;
     }
     await this.playClip(job, config, cache, clip, path);
   }
 
-  private async playClip(job: Job, config: SpeakConfig, cache: AudioCache, clip: Clip, path: string): Promise<void> {
+  private async playClip(
+    job: Job,
+    config: SpeakConfig,
+    cache: AudioCache,
+    clip: Clip,
+    path: string,
+  ): Promise<void> {
     this.lastClip = clip;
     // Eviction is housekeeping; failing to prune must not block playback.
     await ignoreFailure(cache.evict(path));
@@ -288,6 +460,7 @@ export class SpeechController {
     });
     job.player = player;
     const exit = await player.done;
-    if (exit.kind === "failed" && this.live(job)) job.ui.notify(`Playback failed: ${exit.detail}`, "error");
+    if (exit.kind === "failed" && this.live(job))
+      job.ui.notify(`Playback failed: ${exit.detail}`, "error");
   }
 }
