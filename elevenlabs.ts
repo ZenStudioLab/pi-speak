@@ -1,5 +1,5 @@
 export const ELEVENLABS_ORIGIN = "https://api.elevenlabs.io";
-export const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
+export const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES = 4096;
 
 export interface SynthesisRequest {
@@ -177,7 +177,7 @@ export async function synthesize(
     if (body === "too-large")
       return fail(
         "too-large",
-        "The audio was larger than the 10 MiB limit and was discarded.",
+        "The audio was larger than the 20 MiB limit and was discarded.",
       );
     if (body.byteLength === 0)
       return fail("bad-response", "ElevenLabs returned empty audio.");

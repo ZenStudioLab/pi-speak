@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 export const VOICE_ID_PLACEHOLDER = "SET_YOUR_AUTHORIZED_VOICE_ID";
 export const API_KEY_ENV = "ELEVENLABS_API_KEY";
-export const HARD_LIMIT_CEILING = 4000;
+export const HARD_LIMIT_CEILING = 10000;
 const MAX_CONFIG_BYTES = 64 * 1024;
 
 export interface SpeakConfig {

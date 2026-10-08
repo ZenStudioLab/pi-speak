@@ -54,14 +54,14 @@ This extension is local to this repository. It is not part of the published `@ze
      "outputFormat": "mp3_44100_128",
      "voiceRevision": 1,
      "locale": "vi",
-     "hardLimitChars": 4000,
+     "hardLimitChars": 10000,
      "requestTimeoutMs": 45000,
      "player": { "command": "ffplay", "args": ["-nodisp", "-autoexit", "-loglevel", "quiet", "{file}"] },
      "cache": { "maxBytes": 104857600, "ttlDays": 7 }
    }
    ```
 
-   `player.args` must contain the element `{file}` exactly once; it is replaced by the audio path and stays a single argument. For `mpv`, use `"command": "mpv"` and `"args": ["--no-config", "--no-video", "--really-quiet", "{file}"]`. Unknown keys are rejected, so a pasted secret is refused rather than stored. Raise `voiceRevision` whenever you change or re-clone the voice behind the same ID, so older cached clips are not reused. `hardLimitChars` can be lowered but never raised above 4000.
+   `player.args` must contain the element `{file}` exactly once; it is replaced by the audio path and stays a single argument. For `mpv`, use `"command": "mpv"` and `"args": ["--no-config", "--no-video", "--really-quiet", "{file}"]`. Unknown keys are rejected, so a pasted secret is refused rather than stored. Raise `voiceRevision` whenever you change or re-clone the voice behind the same ID, so older cached clips are not reused. `hardLimitChars` can be lowered but never raised above 10000.
 5. **Load it.**
 
    ```bash
@@ -136,7 +136,7 @@ Recording is best effort. If it throws, the original failure is still shown once
 
 - **Answer cleanup (both modes, before translation):** code blocks, unfenced command output (shell prompt lines, diffs, stack frames, one-line JSON), commit hashes, images, HTML, link addresses, and bare URLs are removed; link labels, inline identifiers, numbers, negations, and qualifications are kept; a table becomes one sentence saying it is in the text response. Nothing is summarized or reinterpreted.
 - **`/speak text`:** your wording is sent as typed. Only terminal escape sequences and control characters are removed, and runs of whitespace become one space.
-- **Length:** at most 4000 characters (Unicode code points), or the configured lower limit. Localized speech checks both cleaned source and translated output. Longer text is refused with its length; nothing is truncated or split.
+- **Length:** at most 10000 characters (Unicode code points), or the configured lower limit. Localized speech checks both cleaned source and translated output. Longer text is refused with its length; nothing is truncated or split.
 
 ## Cache
 
@@ -157,7 +157,7 @@ Clips are kept for 7 days from their last use and the cache is capped at 100 MiB
 
 ## Not in this version
 
-These are intentionally absent and documented in `openspec/changes/add-manual-speak-extension/design.md` under "Deferred Capabilities", so each can become its own specification:
+These are intentionally absent and documented in `openspec/changes/archive/2026-10-08-add-manual-speak-extension/design.md` under "Deferred Capabilities", so each can become its own specification:
 
 - `/speak summary` (running it says it is unavailable)
 - confirmation prompts for long text
