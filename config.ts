@@ -5,15 +5,38 @@ import { join } from "node:path";
 
 export const VOICE_ID_PLACEHOLDER = "SET_YOUR_AUTHORIZED_VOICE_ID";
 export const API_KEY_ENV = "ELEVENLABS_API_KEY";
+export const DEEPGRAM_API_KEY_ENV = "DEEPGRAM_API_KEY";
 export const HARD_LIMIT_CEILING = 10000;
+export const PROVIDER_HARD_LIMIT_CEILINGS = {
+  elevenlabs: 10000,
+  deepgram: 2000,
+} as const;
 const MAX_CONFIG_BYTES = 64 * 1024;
 
-export interface SpeakConfig {
-  provider: "elevenlabs";
-  voiceId: string;
-  modelId: string;
+export type SpeechProvider = "elevenlabs" | "deepgram";
+
+export interface ElevenLabsConfig {
+  voiceId?: string;
+  modelId?: string;
   outputFormat: string;
   voiceRevision: number;
+  sttModel: string;
+}
+
+export interface DeepgramConfig {
+  voice?: string;
+  sttModel: string;
+}
+
+export interface SpeakConfig {
+  provider: SpeechProvider;
+  providers: { elevenlabs: ElevenLabsConfig; deepgram: DeepgramConfig };
+  input: {
+    provider: SpeechProvider;
+    language?: string;
+    maxSeconds: number;
+    shortcut: string;
+  };
   locale: string;
   translation?: { provider: string; model: string; thinking?: ThinkingLevel };
   hardLimitChars: number;
@@ -29,9 +52,14 @@ export type ConfigResult =
 export type Env = Readonly<Record<string, string | undefined>>;
 
 const DEFAULTS = {
-  provider: "elevenlabs",
+  provider: "elevenlabs" as const,
   outputFormat: "mp3_44100_128",
   voiceRevision: 1,
+  elevenLabsSttModel: "scribe_v2",
+  deepgramSttModel: "nova-3",
+  inputProvider: "deepgram" as const,
+  inputMaxSeconds: 60,
+  inputShortcut: "alt+t",
   hardLimitChars: HARD_LIMIT_CEILING,
   requestTimeoutMs: 45_000,
   player: {
@@ -43,10 +71,8 @@ const DEFAULTS = {
 
 const TOP_LEVEL_KEYS = new Set([
   "provider",
-  "voiceId",
-  "modelId",
-  "outputFormat",
-  "voiceRevision",
+  "providers",
+  "input",
   "locale",
   "translation",
   "hardLimitChars",
@@ -54,6 +80,12 @@ const TOP_LEVEL_KEYS = new Set([
   "player",
   "cache",
 ]);
+const FLAT_KEY_LOCATIONS: Record<string, string> = {
+  voiceId: "providers.elevenlabs.voiceId",
+  modelId: "providers.elevenlabs.modelId",
+  outputFormat: "providers.elevenlabs.outputFormat",
+  voiceRevision: "providers.elevenlabs.voiceRevision",
+};
 
 /** `$XDG_CONFIG_HOME/pi-speak/config.json`, falling back to `~/.config/pi-speak/config.json`. */
 export function configPath(env: Env, home: string = homedir()): string {
@@ -70,6 +102,14 @@ export function cacheDir(env: Env, home: string = homedir()): string {
 /** The API key is read only from the environment and never from the configuration file. */
 export function readApiKey(env: Env): string | undefined {
   return env[API_KEY_ENV]?.trim() || undefined;
+}
+
+export function readProviderApiKey(
+  env: Env,
+  provider: SpeechProvider,
+): string | undefined {
+  const name = provider === "elevenlabs" ? API_KEY_ENV : DEEPGRAM_API_KEY_ENV;
+  return env[name]?.trim() || undefined;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -106,17 +146,28 @@ function checkedString(
   return value;
 }
 
-function parseVoiceId(value: unknown): string {
+function optionalString(
+  value: unknown,
+  name: string,
+  pattern: RegExp,
+  message: string,
+): string | undefined {
+  if (value === undefined) return undefined;
+  return checkedString(value, name, pattern, message);
+}
+
+function parseVoiceId(value: unknown, name: string): string | undefined {
+  if (value === undefined) return undefined;
   if (
     typeof value === "string" &&
     (value === VOICE_ID_PLACEHOLDER || value.startsWith("SET_"))
   )
-    fail("voiceId is still the placeholder; set your authorized voice ID");
+    fail(`${name} is still the placeholder; set your authorized voice ID`);
   return checkedString(
     value,
-    "voiceId",
+    name,
     /^[A-Za-z0-9_-]{6,64}$/,
-    "voiceId must be 6-64 letters, digits, underscores, or hyphens",
+    `${name} must be 6-64 letters, digits, underscores, or hyphens`,
   );
 }
 
@@ -154,13 +205,13 @@ function parseCache(value: unknown): SpeakConfig["cache"] {
   };
 }
 
-function parseLocale(value: unknown): string {
+function parseLocale(value: unknown, name = "locale"): string {
   if (typeof value !== "string" || value === "")
-    fail("locale must be a non-empty BCP-47 language tag");
+    fail(`${name} must be a non-empty BCP-47 language tag`);
   try {
     return Intl.getCanonicalLocales(value)[0]!;
   } catch {
-    return fail("locale must be a valid BCP-47 language tag");
+    return fail(`${name} must be a valid BCP-47 language tag`);
   }
 }
 
@@ -210,37 +261,135 @@ function parseTranslation(value: unknown): SpeakConfig["translation"] {
   };
 }
 
+function parseProviders(value: unknown): SpeakConfig["providers"] {
+  if (value === undefined) return {
+    elevenlabs: {
+      outputFormat: DEFAULTS.outputFormat,
+      voiceRevision: DEFAULTS.voiceRevision,
+      sttModel: DEFAULTS.elevenLabsSttModel,
+    },
+    deepgram: { sttModel: DEFAULTS.deepgramSttModel },
+  };
+  if (!isRecord(value)) fail("providers must be an object");
+  const unknown = Object.keys(value).filter(
+    (key) => key !== "elevenlabs" && key !== "deepgram",
+  );
+  if (unknown.length > 0)
+    fail(`providers contains unknown key(s): ${unknown.join(", ")}`);
+  const eleven = value.elevenlabs;
+  if (eleven !== undefined && !isRecord(eleven))
+    fail("providers.elevenlabs must be an object");
+  const deepgram = value.deepgram;
+  if (deepgram !== undefined && !isRecord(deepgram))
+    fail("providers.deepgram must be an object");
+  const elevenKeys = ["voiceId", "modelId", "outputFormat", "voiceRevision", "sttModel"];
+  if (eleven && Object.keys(eleven).some((key) => !elevenKeys.includes(key)))
+    fail("providers.elevenlabs contains an unknown key");
+  const deepgramKeys = ["voice", "sttModel"];
+  if (deepgram && Object.keys(deepgram).some((key) => !deepgramKeys.includes(key)))
+    fail("providers.deepgram contains an unknown key");
+  return {
+    elevenlabs: {
+      voiceId: parseVoiceId(eleven?.voiceId, "providers.elevenlabs.voiceId"),
+      modelId: optionalString(
+        eleven?.modelId,
+        "providers.elevenlabs.modelId",
+        /^[A-Za-z0-9_.-]{1,64}$/,
+        "providers.elevenlabs.modelId contains unsupported characters",
+      ),
+      outputFormat: checkedString(
+        eleven?.outputFormat ?? DEFAULTS.outputFormat,
+        "providers.elevenlabs.outputFormat",
+        /^[a-z0-9_]{1,32}$/,
+        "providers.elevenlabs.outputFormat must be lowercase letters, digits, and underscores",
+      ),
+      voiceRevision: integerInRange(
+        eleven?.voiceRevision ?? DEFAULTS.voiceRevision,
+        "providers.elevenlabs.voiceRevision",
+        1,
+        1_000_000,
+      ),
+      sttModel: checkedString(
+        eleven?.sttModel ?? DEFAULTS.elevenLabsSttModel,
+        "providers.elevenlabs.sttModel",
+        /^[A-Za-z0-9_.-]{1,64}$/,
+        "providers.elevenlabs.sttModel contains unsupported characters",
+      ),
+    },
+    deepgram: {
+      voice: optionalString(
+        deepgram?.voice,
+        "providers.deepgram.voice",
+        /^[A-Za-z0-9_.-]{1,128}$/,
+        "providers.deepgram.voice contains unsupported characters",
+      ),
+      sttModel: checkedString(
+        deepgram?.sttModel ?? DEFAULTS.deepgramSttModel,
+        "providers.deepgram.sttModel",
+        /^[A-Za-z0-9_.-]{1,64}$/,
+        "providers.deepgram.sttModel contains unsupported characters",
+      ),
+    },
+  };
+}
+
+function parseInput(value: unknown): SpeakConfig["input"] {
+  if (value === undefined)
+    return {
+      provider: DEFAULTS.inputProvider,
+      maxSeconds: DEFAULTS.inputMaxSeconds,
+      shortcut: DEFAULTS.inputShortcut,
+    };
+  if (!isRecord(value)) fail("input must be an object");
+  const unknown = Object.keys(value).filter(
+    (key) => !["provider", "language", "maxSeconds", "shortcut"].includes(key),
+  );
+  if (unknown.length > 0)
+    fail(`input contains unknown key(s): ${unknown.join(", ")}`);
+  const provider = value.provider ?? DEFAULTS.inputProvider;
+  if (provider !== "deepgram" && provider !== "elevenlabs")
+    fail('input.provider must be "deepgram" or "elevenlabs"');
+  return {
+    provider,
+    language:
+      value.language === undefined
+        ? undefined
+        : parseLocale(value.language, "input.language"),
+    maxSeconds: integerInRange(
+      value.maxSeconds ?? DEFAULTS.inputMaxSeconds,
+      "input.maxSeconds",
+      1,
+      300,
+    ),
+    shortcut: checkedString(
+      value.shortcut ?? DEFAULTS.inputShortcut,
+      "input.shortcut",
+      /^.{1,100}$/,
+      "input.shortcut must be a non-empty string",
+    ),
+  };
+}
+
 function buildConfig(raw: Record<string, unknown>): SpeakConfig {
+  const old = Object.keys(raw).filter((key) => FLAT_KEY_LOCATIONS[key]);
+  if (old.length > 0)
+    fail(
+      `${old[0]} is no longer a top-level setting; use ${FLAT_KEY_LOCATIONS[old[0]!]}`,
+    );
   const unknown = Object.keys(raw).filter((key) => !TOP_LEVEL_KEYS.has(key));
   if (unknown.length > 0)
     fail(
       `unknown configuration key(s): ${unknown.join(", ")}. Secrets belong in ${API_KEY_ENV}, not in this file`,
     );
-  if ((raw.provider ?? DEFAULTS.provider) !== "elevenlabs")
-    fail('provider must be "elevenlabs"');
+  const provider = raw.provider ?? DEFAULTS.provider;
+  if (provider !== "elevenlabs" && provider !== "deepgram")
+    fail('provider must be "elevenlabs" or "deepgram"');
   return {
-    provider: "elevenlabs",
-    voiceId: parseVoiceId(raw.voiceId),
+    provider,
+    providers: parseProviders(raw.providers),
+    input: parseInput(raw.input),
     locale: parseLocale(raw.locale === undefined ? "vi" : raw.locale),
     translation: parseTranslation(raw.translation),
-    modelId: checkedString(
-      raw.modelId,
-      "modelId",
-      /^[A-Za-z0-9_.-]{1,64}$/,
-      "modelId contains unsupported characters",
-    ),
-    outputFormat: checkedString(
-      raw.outputFormat ?? DEFAULTS.outputFormat,
-      "outputFormat",
-      /^[a-z0-9_]{1,32}$/,
-      "outputFormat must be lowercase letters, digits, and underscores",
-    ),
-    voiceRevision: integerInRange(
-      raw.voiceRevision ?? DEFAULTS.voiceRevision,
-      "voiceRevision",
-      1,
-      1_000_000,
-    ),
     hardLimitChars: integerInRange(
       raw.hardLimitChars ?? DEFAULTS.hardLimitChars,
       "hardLimitChars",
@@ -305,21 +454,53 @@ export async function loadConfig(
   return parseConfig(raw);
 }
 
-/** Status lines with no secret: only the last four voice characters and whether a key exists. */
+export function effectiveSpeechProvider(
+  config: SpeakConfig,
+  override?: SpeechProvider,
+): SpeechProvider {
+  return override ?? config.provider;
+}
+
+/** Status lines contain only redacted settings and key presence, never credential values. */
 export function describeConfig(
   config: SpeakConfig,
-  keyPresent: boolean,
+  keyPresent: boolean | { elevenlabs: boolean; deepgram: boolean },
+  options: {
+    speechProvider?: SpeechProvider;
+    inputProviderOverride?: SpeechProvider;
+    recordingTool?: string;
+  } = {},
 ): string[] {
+  const keys =
+    typeof keyPresent === "boolean"
+      ? { elevenlabs: keyPresent, deepgram: false }
+      : keyPresent;
+  const provider = options.speechProvider ?? config.provider;
+  const voice = provider === "elevenlabs"
+    ? config.providers.elevenlabs.voiceId
+      ? `...${config.providers.elevenlabs.voiceId.slice(-4)} (revision ${config.providers.elevenlabs.voiceRevision})`
+      : "not configured"
+    : config.providers.deepgram.voice ?? "not configured";
+  const model = provider === "elevenlabs"
+    ? config.providers.elevenlabs.modelId ?? "not configured"
+    : config.providers.deepgram.sttModel;
+  const format = provider === "elevenlabs" ? config.providers.elevenlabs.outputFormat : "mp3";
+  const limit = Math.min(config.hardLimitChars, PROVIDER_HARD_LIMIT_CEILINGS[provider]);
+  const inputProvider = options.inputProviderOverride ?? config.input.provider;
   return [
-    `provider: ${config.provider}`,
-    `voice: ...${config.voiceId.slice(-4)} (revision ${config.voiceRevision})`,
-    `model: ${config.modelId}`,
+    `speech provider: ${provider}${options.speechProvider ? " (session override)" : ""}`,
+    `voice: ${voice}`,
+    `model: ${model}`,
+    `format: ${format}`,
+    `player: ${config.player.command}`,
+    `limit: ${limit} characters, timeout ${config.requestTimeoutMs} ms`,
+    `input provider: ${inputProvider}${options.inputProviderOverride ? " (session override)" : ""}`,
+    `input language: ${config.input.language ?? "auto-detect"}`,
+    `${API_KEY_ENV}: ${keys.elevenlabs ? "present" : "missing"}`,
+    `${DEEPGRAM_API_KEY_ENV}: ${keys.deepgram ? "present" : "missing"}`,
+    `recording tool: ${options.recordingTool ?? "not found"}`,
     `locale: ${config.locale}`,
     `translation: ${config.translation ? `${config.translation.provider}/${config.translation.model} (thinking: ${config.translation.thinking ?? "host default"})` : "not configured"}`,
-    `format: ${config.outputFormat}`,
-    `player: ${config.player.command}`,
-    `limit: ${config.hardLimitChars} characters, timeout ${config.requestTimeoutMs} ms`,
     `cache: ${config.cache.ttlDays} days, ${config.cache.maxBytes} bytes`,
-    `${API_KEY_ENV}: ${keyPresent ? "present" : "missing"}`,
   ];
 }

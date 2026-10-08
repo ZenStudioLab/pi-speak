@@ -1,6 +1,13 @@
+import {
+  boundedRequest,
+  MAX_RESPONSE_BYTES,
+  providerStatus,
+  readCapped,
+  redact,
+} from "./bounded-request.ts";
+
 export const ELEVENLABS_ORIGIN = "https://api.elevenlabs.io";
-export const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
-const MAX_ERROR_BODY_BYTES = 4096;
+export const MAX_AUDIO_BYTES = MAX_RESPONSE_BYTES;
 
 export interface SynthesisRequest {
   text: string;
@@ -39,44 +46,8 @@ const fail = (kind: SynthesisFailure, message: string): SynthesisResult => ({
   message,
 });
 
-/** Replaces every occurrence of the key so no message can leak it. */
-export function redact(text: string, apiKey: string): string {
-  return apiKey === "" ? text : text.split(apiKey).join("[redacted]");
-}
-
-/** A provider error status such as `quota_exceeded`, only when it has a harmless shape. */
-async function providerStatus(response: Response): Promise<string> {
-  try {
-    const reader = response.body?.getReader();
-    if (!reader) return "";
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    while (total < MAX_ERROR_BODY_BYTES) {
-      const { done, value } = await reader.read();
-      if (done || !value) break;
-      chunks.push(value);
-      total += value.byteLength;
-    }
-    await reader.cancel().catch(() => undefined);
-    const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
-      detail?: { status?: unknown };
-    };
-    const status = parsed?.detail?.status;
-    return typeof status === "string" && /^[a-z_]{3,40}$/.test(status)
-      ? ` (${status})`
-      : "";
-  } catch {
-    return "";
-  }
-}
-
 async function failureForStatus(response: Response): Promise<SynthesisResult> {
   const code = response.status;
-  if (code >= 300 && code < 400)
-    return fail(
-      "redirect",
-      "ElevenLabs answered with a redirect, which is not followed.",
-    );
   const detail = await providerStatus(response);
   if (code === 401)
     return fail(
@@ -109,87 +80,78 @@ async function failureForStatus(response: Response): Promise<SynthesisResult> {
   );
 }
 
-async function readCapped(
-  response: Response,
-): Promise<Uint8Array | "too-large"> {
-  const reader = response.body?.getReader();
-  if (!reader) return new Uint8Array();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > MAX_AUDIO_BYTES) {
-      await reader.cancel().catch(() => undefined);
-      return "too-large";
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks);
-}
-
-/**
- * One text-to-speech request to the fixed production origin. No redirect is followed, no
- * retry is attempted, and the result is accepted only as nonempty audio within the size cap.
- */
+/** One bounded text-to-speech request to the fixed production origin. */
 export async function synthesize(
   request: SynthesisRequest,
   fetchFn: typeof fetch = fetch,
 ): Promise<SynthesisResult> {
-  const { apiKey } = request;
   const url =
     `${ELEVENLABS_ORIGIN}/v1/text-to-speech/${encodeURIComponent(request.voiceId)}` +
     `?output_format=${encodeURIComponent(request.outputFormat)}`;
-  const signal = AbortSignal.any([
-    request.signal,
-    AbortSignal.timeout(request.timeoutMs),
-  ]);
-
-  const interrupted = (): SynthesisResult =>
-    request.signal.aborted
-      ? fail("cancelled", "Speech generation was cancelled.")
-      : fail(
-          "timeout",
-          `ElevenLabs did not finish within ${Math.round(request.timeoutMs / 1000)} s. The request was aborted and not retried. ${UNKNOWN_BILLING}`,
-        );
-
-  try {
-    const response = await fetchFn(url, {
+  const result = await boundedRequest(
+    fetchFn,
+    url,
+    {
       method: "POST",
-      redirect: "manual",
-      signal,
       headers: {
-        "xi-api-key": apiKey,
+        "xi-api-key": request.apiKey,
         "content-type": "application/json",
         accept: "audio/*",
       },
       body: JSON.stringify({ text: request.text, model_id: request.modelId }),
-    });
-    if (!response.ok) return await failureForStatus(response);
-    const type = response.headers.get("content-type") ?? "";
-    if (!type.toLowerCase().startsWith("audio/"))
+    },
+    request.timeoutMs,
+    request.signal,
+    async (response) => {
+      if (!response.ok) return undefined;
+      const type = response.headers.get("content-type") ?? "";
+      if (!type.toLowerCase().startsWith("audio/")) return undefined;
+      return readCapped(response);
+    },
+  );
+  if (!result.ok) {
+    if (result.kind === "cancelled")
+      return fail("cancelled", "Speech generation was cancelled.");
+    if (result.kind === "timeout")
       return fail(
-        "bad-response",
-        "ElevenLabs returned something that is not audio, so it was discarded.",
+        "timeout",
+        `ElevenLabs did not finish within ${Math.round(request.timeoutMs / 1000)} s. The request was aborted and not retried. ${UNKNOWN_BILLING}`,
       );
-    const body = await readCapped(response);
-    if (body === "too-large")
+    if (result.kind === "redirect")
       return fail(
-        "too-large",
-        "The audio was larger than the 20 MiB limit and was discarded.",
+        "redirect",
+        "ElevenLabs answered with a redirect, which is not followed.",
       );
-    if (body.byteLength === 0)
-      return fail("bad-response", "ElevenLabs returned empty audio.");
-    return { ok: true, bytes: body };
-  } catch {
-    if (signal.aborted) return interrupted();
     return fail(
       "network",
       redact(
         `Could not reach ElevenLabs. The request was not retried. ${UNKNOWN_BILLING}`,
-        apiKey,
+        request.apiKey,
       ),
     );
   }
+  const response = result.response;
+  if (!response.ok) return await failureForStatus(response);
+  const type = response.headers.get("content-type") ?? "";
+  if (!type.toLowerCase().startsWith("audio/"))
+    return fail(
+      "bad-response",
+      "ElevenLabs returned something that is not audio, so it was discarded.",
+    );
+  const body = result.value;
+  if (body === undefined)
+    return fail(
+      "bad-response",
+      "ElevenLabs returned something that is not audio, so it was discarded.",
+    );
+  if (body === "too-large")
+    return fail(
+      "too-large",
+      "The audio was larger than 20 MiB and was discarded.",
+    );
+  if (body.byteLength === 0)
+    return fail("bad-response", "ElevenLabs returned empty audio.");
+  return { ok: true, bytes: body };
 }
+
+export { redact } from "./bounded-request.ts";

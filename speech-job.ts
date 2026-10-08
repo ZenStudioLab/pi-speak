@@ -8,12 +8,16 @@ import {
 import { AudioCache, cacheKey, clipExtension } from "./cache.ts";
 import {
   API_KEY_ENV,
+  PROVIDER_HARD_LIMIT_CEILINGS,
   cacheDir,
   describeConfig,
+  effectiveSpeechProvider,
   loadConfig,
   readApiKey,
+  readProviderApiKey,
   type Env,
   type SpeakConfig,
+  type SpeechProvider,
 } from "./config.ts";
 import { redact, synthesize } from "./elevenlabs.ts";
 import { fetchQuota } from "./quota.ts";
@@ -43,6 +47,7 @@ type Phase = "preparing" | "translating" | "generating" | "playing";
 
 interface Job {
   controller: AbortController;
+  speechProviderOverride?: SpeechProvider;
   phase: Phase;
   player?: PlayerHandle;
   ui: SpeakUi;
@@ -82,6 +87,8 @@ export class SpeechController {
   private task: Promise<void> = Promise.resolve();
   private quotaRequest: AbortController | undefined;
   private quotaTask: Promise<void> = Promise.resolve();
+  private speechProviderOverride: SpeechProvider | undefined;
+  private inputProviderOverride: SpeechProvider | undefined;
 
   constructor(deps: SpeakDeps) {
     this.deps = deps;
@@ -139,6 +146,33 @@ export class SpeechController {
     this.quotaRequest = undefined;
   }
 
+  async provider(
+    kind: "speech" | "input",
+    name: SpeechProvider | "reset" | undefined,
+    ui: SpeakUi,
+  ): Promise<void> {
+    if (name !== undefined && name !== "reset" && name !== "elevenlabs" && name !== "deepgram") {
+      ui.notify(kind === "speech" ? "Usage: /speak provider [elevenlabs|deepgram|reset]" : "Usage: /talk provider [deepgram|elevenlabs|reset]", "info");
+      return;
+    }
+    if (name !== undefined) {
+      if (kind === "speech") this.speechProviderOverride = name === "reset" ? undefined : name;
+      else this.inputProviderOverride = name === "reset" ? undefined : name;
+    }
+    const loaded = await loadConfig(this.deps.env, this.deps.readFile, this.deps.home);
+    if (!loaded.ok) {
+      ui.notify(`not configured: ${loaded.problem}`, "warning");
+      return;
+    }
+    const override = kind === "speech" ? this.speechProviderOverride : this.inputProviderOverride;
+    const configured = kind === "speech" ? loaded.config.provider : loaded.config.input.provider;
+    ui.notify(`${kind} provider: ${override ?? configured}${override ? " (session override)" : ""}`, "info");
+  }
+
+  talkUsage(ui: SpeakUi): void {
+    ui.notify("Usage: /talk provider [deepgram|elevenlabs|reset]", "info");
+  }
+
   /** Quota is independent of speech; do not block Pi's stop command while waiting. */
   quota(ui: SpeakUi): void {
     if (this.quotaRequest) {
@@ -178,10 +212,22 @@ export class SpeechController {
     );
     const lines: string[] = [];
     if (loaded.ok) {
+      const recordingTool =
+        (await resolveExecutable("rec", this.deps.env)) ??
+        (await resolveExecutable("arecord", this.deps.env)) ??
+        (await resolveExecutable("ffmpeg", this.deps.env));
       lines.push(
         ...describeConfig(
           loaded.config,
-          readApiKey(this.deps.env) !== undefined,
+          {
+            elevenlabs: readProviderApiKey(this.deps.env, "elevenlabs") !== undefined,
+            deepgram: readProviderApiKey(this.deps.env, "deepgram") !== undefined,
+          },
+          {
+            speechProvider: this.speechProviderOverride,
+            inputProviderOverride: this.inputProviderOverride,
+            recordingTool: recordingTool ? recordingTool : "not found",
+          },
         ),
       );
       const cache = this.cacheFor(loaded.config);
@@ -213,6 +259,7 @@ export class SpeechController {
     }
     const job: Job = {
       controller: new AbortController(),
+      speechProviderOverride: this.speechProviderOverride,
       phase: "preparing",
       ui,
       recordFailure,
@@ -316,16 +363,41 @@ export class SpeechController {
       job.ui.notify(`Speech is not configured: ${loaded.problem}`, "warning");
       return undefined;
     }
-    const config = loaded.config;
+    const provider = effectiveSpeechProvider(loaded.config, job.speechProviderOverride);
+    if (provider === "deepgram") {
+      job.ui.notify(
+        "Deepgram speech is not available yet. Nothing was sent. Use /speak provider elevenlabs.",
+        "warning",
+      );
+      return undefined;
+    }
+    const config: SpeakConfig = {
+      ...loaded.config,
+      provider,
+      hardLimitChars: Math.min(
+        loaded.config.hardLimitChars,
+        PROVIDER_HARD_LIMIT_CEILINGS[provider],
+      ),
+    };
     if (text !== undefined) {
       const length = checkLength(text, config.hardLimitChars);
       if (!length.ok) {
         job.ui.notify(
-          `That text is ${length.length} characters and the limit is ${length.limit}. Nothing was sent. Use /speak text with a shorter passage.`,
+          `That text is ${length.length} characters and the ${provider} limit is ${length.limit}. Nothing was sent. Use /speak text with a shorter passage.`,
           "warning",
         );
         return undefined;
       }
+    }
+    if (
+      provider === "elevenlabs" &&
+      (!config.providers.elevenlabs.voiceId || !config.providers.elevenlabs.modelId)
+    ) {
+      job.ui.notify(
+        "ElevenLabs speech is not configured: set providers.elevenlabs.voiceId and providers.elevenlabs.modelId. Nothing was sent.",
+        "warning",
+      );
+      return undefined;
     }
     const player = await resolveExecutable(
       config.player.command,
@@ -375,14 +447,14 @@ export class SpeechController {
       key: cacheKey({
         text,
         provider: config.provider,
-        voiceId: config.voiceId,
-        modelId: config.modelId,
-        outputFormat: config.outputFormat,
-        voiceRevision: config.voiceRevision,
+        voiceId: config.providers.elevenlabs.voiceId ?? "",
+        modelId: config.providers.elevenlabs.modelId ?? "",
+        outputFormat: config.providers.elevenlabs.outputFormat,
+        voiceRevision: config.providers.elevenlabs.voiceRevision,
         normalizerVersion: NORMALIZER_VERSION,
         speechLocale: localized ? config.locale : "original",
       }),
-      extension: clipExtension(config.outputFormat),
+      extension: clipExtension(config.providers.elevenlabs.outputFormat),
     };
 
     let path = await cache.get(clip.key, clip.extension);
@@ -401,9 +473,9 @@ export class SpeechController {
       const result = await synthesize(
         {
           text,
-          voiceId: config.voiceId,
-          modelId: config.modelId,
-          outputFormat: config.outputFormat,
+          voiceId: config.providers.elevenlabs.voiceId ?? "",
+          modelId: config.providers.elevenlabs.modelId ?? "",
+          outputFormat: config.providers.elevenlabs.outputFormat,
           apiKey,
           timeoutMs: config.requestTimeoutMs,
           signal: job.controller.signal,

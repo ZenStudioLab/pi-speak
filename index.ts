@@ -16,7 +16,11 @@ export const SPEAK_USAGE = [
   "  /speak replay          replay the last clip without regenerating it",
   "  /speak status          show configuration and state",
   "  /speak quota           show ElevenLabs account quota and billing figures",
+  "  /speak provider [elevenlabs|deepgram|reset]  select speech provider for this session",
 ].join("\n");
+
+export const TALK_USAGE =
+  "Usage: /talk provider [deepgram|elevenlabs|reset]";
 
 const NOT_AVAILABLE = (name: string) =>
   `/speak ${name} is not available in this version.`;
@@ -34,6 +38,12 @@ async function handleSpeak(
   if (word === "stop") return controller.stop(ui);
   if (word === "status") return controller.status(ui);
   if (word === "quota") return controller.quota(ui);
+  if (word === "provider") {
+    const name = trimmed.split(/\s+/)[1] as "elevenlabs" | "deepgram" | "reset" | undefined;
+    if (trimmed.split(/\s+/).length > 2)
+      return ui.notify(SPEAK_USAGE, "info");
+    return controller.provider("speech", name, ui);
+  }
   if (word === "summary" || word === "cache-clear")
     return ui.notify(NOT_AVAILABLE(word), "info");
   if (
@@ -105,6 +115,26 @@ export function registerSpeak(
       handleSpeak(args, ctx, controller, (record) =>
         pi.appendEntry("speak-translation-failure", record),
       ),
+  });
+  pi.registerCommand("talk", {
+    description: "Select the voice input provider for this session",
+    handler: async (args, ctx) => {
+      const parts = args.trim().split(/\s+/).filter(Boolean);
+      if ((parts.length !== 1 && parts.length !== 2) || parts[0] !== "provider") {
+        controller.talkUsage(ctx.ui);
+        return;
+      }
+      if (parts.length === 1) {
+        await controller.provider("input", undefined, ctx.ui);
+        return;
+      }
+      const name = parts[1] as "deepgram" | "elevenlabs" | "reset";
+      if (!["deepgram", "elevenlabs", "reset"].includes(name)) {
+        controller.talkUsage(ctx.ui);
+        return;
+      }
+      await controller.provider("input", name, ctx.ui);
+    },
   });
 
   const reset = () => controller.resetSession();

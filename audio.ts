@@ -1,7 +1,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { access, constants } from "node:fs/promises";
 import { delimiter, join } from "node:path";
-import { API_KEY_ENV, type Env } from "./config.ts";
+import { API_KEY_ENV, DEEPGRAM_API_KEY_ENV, type Env } from "./config.ts";
 
 const MAX_STDERR_CHARS = 2000;
 const KILL_GRACE_MS = 2000;
@@ -49,10 +49,11 @@ export function playerArgs(
   return template.map((arg) => (arg === "{file}" ? file : arg));
 }
 
-/** The child gets Pi's environment minus the ElevenLabs key. */
-export function playerEnvironment(env: Env): NodeJS.ProcessEnv {
+/** Child processes inherit audio settings but never receive either provider key. */
+export function childEnvironment(env: Env): NodeJS.ProcessEnv {
   const clean: NodeJS.ProcessEnv = { ...env };
   delete clean[API_KEY_ENV];
+  delete clean[DEEPGRAM_API_KEY_ENV];
   return clean;
 }
 
@@ -78,7 +79,7 @@ export function startPlayer(options: {
     {
       shell: false,
       stdio: ["ignore", "ignore", "pipe"],
-      env: playerEnvironment(options.env),
+      env: childEnvironment(options.env),
     },
   );
   let stopped = false;
