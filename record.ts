@@ -147,6 +147,7 @@ export async function startRecorder(options: {
 
   const done = new Promise<RecorderExit>((resolve) => {
     const settle = (why: string) => {
+      if (exited) return;
       exited = true;
       if (!stopRequested) {
         const extra = sanitize(stderr);
@@ -160,7 +161,8 @@ export async function startRecorder(options: {
       resolve({ kind: "stopped", pcm: Buffer.concat(chunks), capped });
     };
     child.once("error", (error: Error) => settle(`could not run: ${sanitize(error.message)}`));
-    child.once("exit", (code: number | null, signal: NodeJS.Signals | null) =>
+    // `close`, not `exit`: audio the recorder wrote before it stopped may still be in the pipe.
+    child.once("close", (code: number | null, signal: NodeJS.Signals | null) =>
       settle(`exited on its own (${signal ? `signal ${signal}` : `exit code ${code}`})`),
     );
   });

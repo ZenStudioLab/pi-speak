@@ -99,7 +99,7 @@ Provider commands never write the configuration file. A selection stays in force
 
 Dictate a prompt: press the shortcut, speak, press it again, and the transcript is appended to the composer. The extension never submits the composer, replaces its text, or runs anything you said; you review the text and send it yourself.
 
-**Setup.** Install one of `rec`, `arecord`, or `ffmpeg` (tried in that order; `ffmpeg` records from PulseAudio's default source). Export the key for the input provider (`DEEPGRAM_API_KEY` for `deepgram`, `ELEVENLABS_API_KEY` for `elevenlabs`). The optional `input` block selects the provider, a language, the length cap, and the shortcut as shown above. `input.language` is independent of the speech `locale`; omit it and the provider detects the language. A changed `input.shortcut` takes effect after `/reload`. `/speak status` shows the recording tool it found, key presence, and the effective input provider, model, and language.
+**Setup.** Install one of `rec`, `arecord`, or `ffmpeg` (tried in that order; `ffmpeg` records from PulseAudio's default source). Export the key for the input provider (`DEEPGRAM_API_KEY` for `deepgram`, `ELEVENLABS_API_KEY` for `elevenlabs`). The optional `input` block selects the provider, a language, the length cap, and the shortcut as shown above. `input.language` is independent of the speech `locale`; omit it and the provider detects the language. If you only dictate, you may leave out `providers.elevenlabs.voiceId`; a placeholder left in it is still refused. A changed `input.shortcut` takes effect after `/reload`. `/speak status` shows the recording tool it found, key presence, and the effective input provider, model, and language.
 
 **Controls.**
 

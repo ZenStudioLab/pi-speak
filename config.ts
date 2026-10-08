@@ -420,7 +420,7 @@ export function parseConfig(raw: unknown): ConfigResult {
   }
 }
 
-/** Reads and validates the configuration on demand; nothing is read when the extension loads. */
+/** Reads and validates the configuration on demand, and once at load for `input.shortcut`. */
 export async function loadConfig(
   env: Env,
   read: (path: string) => Promise<string> = (path) => readFile(path, "utf8"),

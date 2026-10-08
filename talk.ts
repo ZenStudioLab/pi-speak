@@ -88,7 +88,7 @@ export class TalkController {
     const active = this.active;
     if (!active) return this.start(ui);
     if (active.phase === "starting") {
-      ui.notify("The microphone is still starting.", "info");
+      this.cancelStarting(active, ui);
     } else if (active.phase === "transcribing") {
       ui.notify(
         "A transcription is still in progress. Wait for it to finish.",
@@ -121,6 +121,27 @@ export class TalkController {
   private async start(ui: TalkUi): Promise<void> {
     const claim: Starting = { phase: "starting" };
     this.active = claim;
+    // Escape cancels an attempt that is not recording yet, so it never reaches the editor.
+    const unsubscribeStarting = ui.onTerminalInput((data) => {
+      if (this.active !== claim || !matchesKey(data, "escape")) return undefined;
+      this.cancelStarting(claim, ui);
+      return { consume: true };
+    });
+    try {
+      await this.begin(ui, claim);
+    } finally {
+      unsubscribeStarting();
+    }
+  }
+
+  /** Clearing the claim makes every `this.active !== claim` check in `begin` end the attempt. */
+  private cancelStarting(claim: Starting, ui: TalkUi): void {
+    if (this.active === claim) this.active = undefined;
+    this.clearStatus(ui);
+    ui.notify("Recording cancelled. Nothing was recorded or sent.", "info");
+  }
+
+  private async begin(ui: TalkUi, claim: Starting): Promise<void> {
     const abandon = (message: string) => {
       if (this.active === claim) this.active = undefined;
       ui.notify(message, "warning");
@@ -264,8 +285,12 @@ export class TalkController {
     rec.handle.stop();
     rec.cancel.abort();
     rec.pcm = undefined;
+    this.clearStatus(rec.ui);
+  }
+
+  private clearStatus(ui: TalkUi): void {
     try {
-      rec.ui.setStatus(STATUS_KEY, undefined);
+      ui.setStatus(STATUS_KEY, undefined);
     } catch {
       // The status line is cosmetic; a replaced session's UI may refuse updates.
     }
