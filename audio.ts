@@ -60,7 +60,7 @@ export function childEnvironment(env: Env): NodeJS.ProcessEnv {
 // eslint-disable-next-line no-control-regex
 const NOT_PRINTABLE = /[\u0000-\u001f\u007f-\u009f]+/g;
 
-const sanitize = (text: string): string =>
+export const sanitize = (text: string): string =>
   text.replace(NOT_PRINTABLE, " ").trim().slice(0, 200);
 
 export function startPlayer(options: {

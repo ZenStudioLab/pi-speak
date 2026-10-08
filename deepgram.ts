@@ -1,10 +1,19 @@
 import {
   boundedRequest,
   MAX_RESPONSE_BYTES,
-  providerStatus,
   readCapped,
   redact,
 } from "./bounded-request.ts";
+import {
+  missingKey,
+  readJson,
+  statusFailure,
+  transcriptFrom,
+  transportFailure,
+  type TranscriptionProvider,
+  type TranscriptionRequest,
+  type TranscriptionResult,
+} from "./transcription.ts";
 
 export const DEEPGRAM_ORIGIN = "https://api.deepgram.com";
 export const MAX_AUDIO_BYTES = MAX_RESPONSE_BYTES;
@@ -43,12 +52,11 @@ const fail = (
   message: string,
 ): DeepgramSynthesisResult => ({ ok: false, kind, message });
 
-async function failureForStatus(
-  response: Response,
+function failureForStatus(
+  code: number,
+  detail: string,
   apiKey: string,
-): Promise<DeepgramSynthesisResult> {
-  const code = response.status;
-  const detail = await providerStatus(response);
+): DeepgramSynthesisResult {
   const safe = (message: string) => redact(message, apiKey);
   if (code === 401)
     return fail(
@@ -109,7 +117,6 @@ export async function synthesize(
     request.timeoutMs,
     request.signal,
     async (response) => {
-      if (!response.ok) return undefined;
       const type = response.headers.get("content-type") ?? "";
       if (!type.toLowerCase().startsWith("audio/")) return undefined;
       return readCapped(response);
@@ -137,7 +144,8 @@ export async function synthesize(
     );
   }
   const response = result.response;
-  if (!response.ok) return await failureForStatus(response, request.apiKey);
+  if (!response.ok)
+    return failureForStatus(response.status, result.detail, request.apiKey);
   const type = response.headers.get("content-type") ?? "";
   if (!type.toLowerCase().startsWith("audio/"))
     return fail(
@@ -158,4 +166,60 @@ export async function synthesize(
   if (body.byteLength === 0)
     return fail("bad-response", "Deepgram returned empty audio.");
   return { ok: true, bytes: body };
+}
+
+const TRANSCRIPTION_PROVIDER: TranscriptionProvider = {
+  name: "Deepgram",
+  keyEnv: "DEEPGRAM_API_KEY",
+  modelSetting: "providers.deepgram.sttModel",
+};
+
+/** One bounded speech-to-text upload to Deepgram's fixed production origin. */
+export async function transcribe(
+  request: TranscriptionRequest,
+  fetchFn: typeof fetch = fetch,
+): Promise<TranscriptionResult> {
+  if (!request.apiKey.trim()) return missingKey(TRANSCRIPTION_PROVIDER);
+  const language = request.language
+    ? `language=${encodeURIComponent(request.language)}`
+    : "detect_language=true";
+  const url = `${DEEPGRAM_ORIGIN}/v1/listen?model=${encodeURIComponent(request.model)}&smart_format=true&${language}`;
+  const result = await boundedRequest(
+    fetchFn,
+    url,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Token ${request.apiKey}`,
+        "Content-Type": "audio/wav",
+        accept: "application/json",
+      },
+      body: request.wav,
+    },
+    request.timeoutMs,
+    request.signal,
+    readJson,
+  );
+  if (!result.ok)
+    return transportFailure(
+      TRANSCRIPTION_PROVIDER,
+      result.kind,
+      request.timeoutMs,
+      request.apiKey,
+    );
+  if (!result.response.ok)
+    return statusFailure(
+      TRANSCRIPTION_PROVIDER,
+      result.response.status,
+      result.detail,
+      request.apiKey,
+    );
+  return transcriptFrom(TRANSCRIPTION_PROVIDER, result.value, (json) => {
+    const channels = (json as { results?: { channels?: unknown } })?.results?.channels;
+    const first = Array.isArray(channels) ? channels[0] : undefined;
+    const alternatives = (first as { alternatives?: unknown } | undefined)?.alternatives;
+    return Array.isArray(alternatives)
+      ? (alternatives[0] as { transcript?: unknown } | undefined)?.transcript
+      : undefined;
+  });
 }

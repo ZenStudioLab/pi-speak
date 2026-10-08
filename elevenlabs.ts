@@ -1,10 +1,19 @@
 import {
   boundedRequest,
   MAX_RESPONSE_BYTES,
-  providerStatus,
   readCapped,
   redact,
 } from "./bounded-request.ts";
+import {
+  missingKey,
+  readJson,
+  statusFailure,
+  transcriptFrom,
+  transportFailure,
+  type TranscriptionProvider,
+  type TranscriptionRequest,
+  type TranscriptionResult,
+} from "./transcription.ts";
 
 export const ELEVENLABS_ORIGIN = "https://api.elevenlabs.io";
 export const MAX_AUDIO_BYTES = MAX_RESPONSE_BYTES;
@@ -46,9 +55,7 @@ const fail = (kind: SynthesisFailure, message: string): SynthesisResult => ({
   message,
 });
 
-async function failureForStatus(response: Response): Promise<SynthesisResult> {
-  const code = response.status;
-  const detail = await providerStatus(response);
+function failureForStatus(code: number, detail: string): SynthesisResult {
   if (code === 401)
     return fail(
       "auth",
@@ -103,7 +110,6 @@ export async function synthesize(
     request.timeoutMs,
     request.signal,
     async (response) => {
-      if (!response.ok) return undefined;
       const type = response.headers.get("content-type") ?? "";
       if (!type.toLowerCase().startsWith("audio/")) return undefined;
       return readCapped(response);
@@ -131,7 +137,7 @@ export async function synthesize(
     );
   }
   const response = result.response;
-  if (!response.ok) return await failureForStatus(response);
+  if (!response.ok) return failureForStatus(response.status, result.detail);
   const type = response.headers.get("content-type") ?? "";
   if (!type.toLowerCase().startsWith("audio/"))
     return fail(
@@ -152,6 +158,56 @@ export async function synthesize(
   if (body.byteLength === 0)
     return fail("bad-response", "ElevenLabs returned empty audio.");
   return { ok: true, bytes: body };
+}
+
+const TRANSCRIPTION_PROVIDER: TranscriptionProvider = {
+  name: "ElevenLabs",
+  keyEnv: "ELEVENLABS_API_KEY",
+  modelSetting: "providers.elevenlabs.sttModel",
+};
+
+/** One bounded Scribe speech-to-text upload to the fixed production origin. */
+export async function transcribe(
+  request: TranscriptionRequest,
+  fetchFn: typeof fetch = fetch,
+): Promise<TranscriptionResult> {
+  if (!request.apiKey.trim()) return missingKey(TRANSCRIPTION_PROVIDER);
+  const form = new FormData();
+  form.append("model_id", request.model);
+  form.append("tag_audio_events", "false");
+  if (request.language) form.append("language_code", request.language);
+  form.append("file", new Blob([request.wav], { type: "audio/wav" }), "recording.wav");
+  const result = await boundedRequest(
+    fetchFn,
+    `${ELEVENLABS_ORIGIN}/v1/speech-to-text`,
+    {
+      method: "POST",
+      headers: { "xi-api-key": request.apiKey, accept: "application/json" },
+      body: form,
+    },
+    request.timeoutMs,
+    request.signal,
+    readJson,
+  );
+  if (!result.ok)
+    return transportFailure(
+      TRANSCRIPTION_PROVIDER,
+      result.kind,
+      request.timeoutMs,
+      request.apiKey,
+    );
+  if (!result.response.ok)
+    return statusFailure(
+      TRANSCRIPTION_PROVIDER,
+      result.response.status,
+      result.detail,
+      request.apiKey,
+    );
+  return transcriptFrom(
+    TRANSCRIPTION_PROVIDER,
+    result.value,
+    (json) => (json as { text?: unknown } | null)?.text,
+  );
 }
 
 export { redact } from "./bounded-request.ts";

@@ -1,13 +1,25 @@
 export const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
+export const MAX_TRANSCRIPT_RESPONSE_BYTES = 1024 * 1024;
 const MAX_ERROR_BODY_BYTES = 4096;
 
 export type BoundedFailure = "timeout" | "cancelled" | "network" | "redirect";
 
 export type BoundedRequestResult<T = undefined> =
-  | { ok: true; response: Response; value: T }
+  | {
+      ok: true;
+      response: Response;
+      /** What `consume` returned; undefined when the response was an HTTP error. */
+      value: T | undefined;
+      /** The harmless provider status (see `providerStatus`) of an HTTP error, else empty. */
+      detail: string;
+    }
   | { ok: false; kind: BoundedFailure };
 
-/** Executes one request with a total deadline and without following redirects. */
+/**
+ * Executes one request with a total deadline and without following redirects. The body is read
+ * inside the same boundary: `consume` reads a successful response, and an HTTP error's body is
+ * read here, so a body that stalls, is cancelled, or fails is classified like the request itself.
+ */
 export async function boundedRequest<T = undefined>(
   fetchFn: typeof fetch,
   url: string,
@@ -25,8 +37,10 @@ export async function boundedRequest<T = undefined>(
     });
     if (response.status >= 300 && response.status < 400)
       return { ok: false, kind: "redirect" };
+    if (!response.ok)
+      return { ok: true, response, value: undefined, detail: await providerStatus(response) };
     const value = await consume(response);
-    return { ok: true, response, value };
+    return { ok: true, response, value, detail: "" };
   } catch {
     return {
       ok: false,
@@ -58,11 +72,14 @@ export async function readCapped(
   return Buffer.concat(chunks);
 }
 
-/** Reads only a bounded, structured provider status; arbitrary response text is discarded. */
+/**
+ * Reads only a bounded, structured provider status; arbitrary response text is discarded.
+ * A body that cannot be read rejects, so the caller's deadline handling classifies it.
+ */
 export async function providerStatus(response: Response): Promise<string> {
+  const body = await readCapped(response, MAX_ERROR_BODY_BYTES);
+  if (body === "too-large") return "";
   try {
-    const body = await readCapped(response, MAX_ERROR_BODY_BYTES);
-    if (body === "too-large") return "";
     const parsed = JSON.parse(Buffer.from(body).toString("utf8")) as {
       detail?: { status?: unknown };
     };

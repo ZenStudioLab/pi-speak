@@ -22,6 +22,7 @@ import {
 import { synthesize as synthesizeDeepgram } from "./deepgram.ts";
 import { redact, synthesize as synthesizeElevenLabs } from "./elevenlabs.ts";
 import { fetchQuota } from "./quota.ts";
+import { findRecorder } from "./record.ts";
 import { NORMALIZER_VERSION, checkLength } from "./text.ts";
 import { Translator, type TranslationRegistry } from "./translation.ts";
 import {
@@ -91,9 +92,16 @@ export class SpeechController {
   private quotaTask: Promise<void> = Promise.resolve();
   private speechProviderOverride: SpeechProvider | undefined;
   private inputProviderOverride: SpeechProvider | undefined;
+  /** Returns a reason while new audio must not start (the microphone is in use), else undefined. */
+  speechBlock: (() => string | undefined) | undefined;
 
   constructor(deps: SpeakDeps) {
     this.deps = deps;
+  }
+
+  /** The session-only voice-input provider, applied over the configured one. */
+  get inputOverride(): SpeechProvider | undefined {
+    return this.inputProviderOverride;
   }
 
   /** Resolves when the current speech and quota work have ended. */
@@ -127,6 +135,12 @@ export class SpeechController {
     }
     const job = this.begin(ui);
     if (job) this.task = this.run(job, () => this.replayClip(job, clip));
+  }
+
+  /** Ends this extension's own generation and playback and waits for the player to really exit. */
+  async stopOwnAudio(): Promise<void> {
+    if (this.job) this.cancel(this.job);
+    await this.task;
   }
 
   stop(ui: SpeakUi): void {
@@ -171,10 +185,6 @@ export class SpeechController {
     ui.notify(`${kind} provider: ${override ?? configured}${override ? " (session override)" : ""}`, "info");
   }
 
-  talkUsage(ui: SpeakUi): void {
-    ui.notify("Usage: /talk provider [deepgram|elevenlabs|reset]", "info");
-  }
-
   /** Quota is independent of speech; do not block Pi's stop command while waiting. */
   quota(ui: SpeakUi): void {
     if (this.quotaRequest) {
@@ -214,10 +224,7 @@ export class SpeechController {
     );
     const lines: string[] = [];
     if (loaded.ok) {
-      const recordingTool =
-        (await resolveExecutable("rec", this.deps.env)) ??
-        (await resolveExecutable("arecord", this.deps.env)) ??
-        (await resolveExecutable("ffmpeg", this.deps.env));
+      const recordingTool = (await findRecorder(this.deps.env))?.path;
       lines.push(
         ...describeConfig(
           loaded.config,
@@ -252,6 +259,11 @@ export class SpeechController {
     ui: SpeakUi,
     recordFailure?: (record: TranslationFailureRecord) => void,
   ): Job | undefined {
+    const blocked = this.speechBlock?.();
+    if (blocked) {
+      ui.notify(blocked, "warning");
+      return undefined;
+    }
     if (this.job) {
       ui.notify(
         "Speech is already active. Use /speak stop to end it.",
