@@ -134,7 +134,7 @@ Recording is best effort. If it throws, the original failure is still shown once
 
 ### What is spoken
 
-- **Answer cleanup (both modes, before translation):** code blocks, images, HTML, link addresses, and bare URLs are removed; link labels, inline identifiers, numbers, negations, and qualifications are kept; a table becomes one sentence saying it is in the text response. Nothing is summarized or reinterpreted.
+- **Answer cleanup (both modes, before translation):** code blocks, unfenced command output (shell prompt lines, diffs, stack frames, one-line JSON), commit hashes, images, HTML, link addresses, and bare URLs are removed; link labels, inline identifiers, numbers, negations, and qualifications are kept; a table becomes one sentence saying it is in the text response. Nothing is summarized or reinterpreted.
 - **`/speak text`:** your wording is sent as typed. Only terminal escape sequences and control characters are removed, and runs of whitespace become one space.
 - **Length:** at most 4000 characters (Unicode code points), or the configured lower limit. Localized speech checks both cleaned source and translated output. Longer text is refused with its length; nothing is truncated or split.
 

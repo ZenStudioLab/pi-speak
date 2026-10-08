@@ -1,5 +1,5 @@
 /** Bump when cleanup behavior changes so cached clips from older rules are not reused. */
-export const NORMALIZER_VERSION = 1;
+export const NORMALIZER_VERSION = 2;
 
 export const TABLE_NOTICE = "A table is available in the text response.";
 
@@ -69,6 +69,46 @@ function stripCodeBlocks(lines: string[]): string[] {
   return kept;
 }
 
+const SHELL_PROMPT = /^\s*\$\s+[A-Za-z./~_-]/;
+const DIFF_HEADER = /^(?:diff --git |index [0-9a-f]{7,}\.\.[0-9a-f]{7,}|(?:---|\+\+\+) (?:a\/|b\/|\/dev\/null))/;
+// An indented `at ...` line only counts as a stack frame when it ends in path:line:column.
+const STACK_FRAME = /^\s+at\s+(?:.*\()?[^\s()]*[/\\][^\s()]*:\d+:\d+\)?\s*$/;
+const JSON_LINE = /^\s*(?:\{|\[\s*[{["])/;
+// 7-40 hex characters with at least one digit and one letter a-f, so plain words and numbers stay.
+const HASH = /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/g;
+
+function isJsonLine(line: string): boolean {
+  if (!JSON_LINE.test(line)) return false;
+  try {
+    return typeof JSON.parse(line) === "object";
+  } catch {
+    return false;
+  }
+}
+
+/** Drops unfenced command output: shell prompt lines, diffs, stack frames, and one-line JSON. */
+function dropCommandOutput(lines: string[]): string[] {
+  const kept: string[] = [];
+  let inHunk = false;
+  for (const line of lines) {
+    if (line.startsWith("@@ ")) {
+      inHunk = true;
+      continue;
+    }
+    if (inHunk && /^[-+ ]/.test(line) && line.trim() !== "") continue;
+    inHunk = false;
+    if (
+      SHELL_PROMPT.test(line) ||
+      DIFF_HEADER.test(line) ||
+      STACK_FRAME.test(line) ||
+      isJsonLine(line)
+    )
+      continue;
+    kept.push(line);
+  }
+  return kept;
+}
+
 /** Replaces each run of table rows with one notice; the table is never interpreted. */
 function replaceTables(lines: string[]): string[] {
   const out: string[] = [];
@@ -111,13 +151,16 @@ function stripInlineMarkup(text: string): string {
 }
 
 /**
- * Deterministic answer cleanup for speech. Removes code, images, HTML, link destinations
- * and bare URLs; keeps readable inline identifiers, numbers, negation, and qualifications.
+ * Deterministic answer cleanup for speech. Removes code, command output, commit hashes,
+ * images, HTML, link destinations and bare URLs; keeps readable inline identifiers, numbers,
+ * negation, and qualifications.
  * Never summarizes. Returns an empty string when no speakable prose remains.
  */
 export function prepareAnswerText(markdown: string): string {
   const lines = replaceTables(
-    stripCodeBlocks(stripTerminalControls(markdown).split(/\r?\n/)),
+    dropCommandOutput(
+      stripCodeBlocks(stripTerminalControls(markdown).split(/\r?\n/)),
+    ),
   );
   const cleaned = lines
     .map((line) =>
@@ -127,7 +170,9 @@ export function prepareAnswerText(markdown: string): string {
           .replace(/^\s*>+\s?/, "")
           .replace(/^\s*(?:[-*+])\s+/, "")
           .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/, ""),
-      ).replace(/[ \t]+$/g, ""),
+      )
+        .replace(HASH, "")
+        .replace(/[ \t]+$/g, ""),
     )
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
