@@ -1,178 +1,117 @@
 # Speak
 
-Hear a Pi answer in a configurable speech language (default Vietnamese), or text you type, in your authorized ElevenLabs voice. Pi's written answers remain unchanged. **Nothing is translated, spoken, summarized, or sent anywhere unless you run `/speak`.** Loading, reloading, prompts, tools, and agent completion are silent.
+Hear a Pi answer in a configurable language (default `vi`), or speak text you type, through the selected speech provider. Nothing is translated, spoken, or sent anywhere unless you run `/speak`. Loading, reloading, prompts, tools, and agent completion are silent.
 
-This extension is local to this repository. It is not part of the published `@zenstudiolab/pi-toolset` package and is loaded explicitly with `pi -e`.
+This extension is local to this repository. It is loaded explicitly with `pi -e` and is not part of the published package.
 
 ## Setup
 
-1. **Voice.** In ElevenLabs, create or choose a voice you have the right to use (your own voice, or a licensed one) and copy its voice ID. Keep any recordings out of this repository.
-2. **API key.** Create a dedicated key in ElevenLabs, restrict it to what you need, and give it an account or key limit. Export it in the environment that starts Pi:
+1. Export the key for the provider you intend to use. Keys are read only from the environment and are never written to configuration, cache, logs, notifications, process arguments, or the player's environment.
 
    ```bash
    export ELEVENLABS_API_KEY="..."
+   export DEEPGRAM_API_KEY="..."
    ```
 
-   The key is read only from this variable. It is never written to the configuration, the cache, logs, notifications, process arguments, or the player's environment.
-3. **Player.** Any local player that can play MP3 and accepts a file path. The default is `ffplay` (part of ffmpeg); `mpv` should work with the arguments shown below, but it was not available to test with.
-4. **Configuration.** Create `~/.config/pi-speak/config.json` (or `$XDG_CONFIG_HOME/pi-speak/config.json`):
+2. Install a local MP3 player. The default is `ffplay` from ffmpeg. The configured player is started without a shell.
+3. Create `~/.config/pi-speak/config.json` (or the equivalent `$XDG_CONFIG_HOME` path). This complete example shows the configuration shape and defaults:
 
    ```json
    {
-     "voiceId": "YOUR_VOICE_ID",
-     "modelId": "eleven_flash_v2_5"
-   }
-   ```
-
-   This minimal config supports `/speak original`, `/speak text`, and replay. For localized `/speak`, explicitly select an authenticated model from Pi's model picker/registry and add:
-
-   ```json
-   {
-     "voiceId": "YOUR_VOICE_ID",
-     "modelId": "eleven_flash_v2_5",
+     "provider": "elevenlabs",
+     "providers": {
+       "elevenlabs": {
+         "voiceId": "YOUR_VOICE_ID",
+         "modelId": "eleven_flash_v2_5",
+         "outputFormat": "mp3_44100_128",
+         "voiceRevision": 1,
+         "sttModel": "scribe_v2"
+       },
+       "deepgram": {
+         "voice": "aura-2-thalia-en",
+         "sttModel": "nova-3"
+       }
+     },
+     "input": {
+       "provider": "deepgram",
+       "language": "vi",
+       "maxSeconds": 60,
+       "shortcut": "alt+t"
+     },
      "locale": "vi",
      "translation": {
-       "provider": "YOUR_SELECTED_PI_PROVIDER",
-       "model": "YOUR_SELECTED_PI_MODEL",
+       "provider": "openai-codex",
+       "model": "gpt-6-luna",
        "thinking": "medium"
-     }
-   }
-   ```
-
-   Optional `translation.thinking` accepts `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; it controls only the isolated translation request and its cache identity, never Pi's coding-model thinking. Omit it to retain the host/provider default. For this user's setup, the selected pair is `openai-codex` / `gpt-6-luna` with `medium` thinking.
-
-   Choosing the translation provider/model accepts its separate inference cost and disclosure of the cleaned answer. These placeholders are examples, not automatic model choices. Authenticate through Pi, never this config. `locale` accepts canonical BCP-47 tags such as `vi`, `vi-VN`, or `en`; omitting it defaults to `vi`. Check that both the translation model and ElevenLabs model/voice support your intended language; a valid tag does not establish that support. No voice or model is substituted on failure.
-
-   **Existing-config migration:** old configs still load, but bare `/speak` now targets Vietnamese and requires translation setup. Use `/speak original` to retain the previous untranslated-answer behavior. No file is automatically rewritten.
-
-   Only `voiceId` and `modelId` are required for the literal/original paths. Base defaults are shown here (`translation` is unconfigured):
-
-   ```json
-   {
-     "voiceId": "YOUR_VOICE_ID",
-     "modelId": "eleven_flash_v2_5",
-     "outputFormat": "mp3_44100_128",
-     "voiceRevision": 1,
-     "locale": "vi",
+     },
      "hardLimitChars": 10000,
      "requestTimeoutMs": 45000,
-     "player": { "command": "ffplay", "args": ["-nodisp", "-autoexit", "-loglevel", "quiet", "{file}"] },
+     "player": {
+       "command": "ffplay",
+       "args": ["-nodisp", "-autoexit", "-loglevel", "quiet", "{file}"]
+     },
      "cache": { "maxBytes": 104857600, "ttlDays": 7 }
    }
    ```
 
-   `player.args` must contain the element `{file}` exactly once; it is replaced by the audio path and stays a single argument. For `mpv`, use `"command": "mpv"` and `"args": ["--no-config", "--no-video", "--really-quiet", "{file}"]`. Unknown keys are rejected, so a pasted secret is refused rather than stored. Raise `voiceRevision` whenever you change or re-clone the voice behind the same ID, so older cached clips are not reused. `hardLimitChars` can be lowered but never raised above 10000.
-5. **Load it.**
+   `provider` defaults to `elevenlabs`. The ElevenLabs block contains `voiceId`, `modelId`, `outputFormat`, `voiceRevision`, and `sttModel`; its defaults are `mp3_44100_128`, `1`, and `scribe_v2` for the fields with defaults. The Deepgram block contains `voice` and defaults `sttModel` to `nova-3`. `input.provider` defaults to `deepgram`, `input.maxSeconds` to `60` (range 1–300), and `input.shortcut` to `alt+t`; `input.language` is optional. `hardLimitChars` may lower, but never raise, provider limits.
+
+   **Hand migration:** the old flat keys `voiceId`, `modelId`, `outputFormat`, and `voiceRevision` are rejected. Move them to `providers.elevenlabs.voiceId`, `providers.elevenlabs.modelId`, `providers.elevenlabs.outputFormat`, and `providers.elevenlabs.voiceRevision`. The file is never rewritten automatically.
+
+4. Load the extension:
 
    ```bash
    pi -e /absolute/path/to/pi-toolset/extensions/speak/index.ts
    ```
 
-Missing or invalid configuration never stops Pi from starting. It is reported when you run `/speak` or `/speak status`.
+Invalid configuration is reported when `/speak` or `/speak status` is used and does not stop Pi from starting.
 
 ## Commands
 
-`/speak` is this extension's registered command. In general, `/<name>` may refer to either a registered command or a loaded skill, depending on the active toolset.
+`/<name>` may refer to either a registered command or a loaded skill, depending on the active toolset.
 
-| Command | What it does |
+| Command | Action |
 | --- | --- |
-| `/speak` | Clean the latest completed answer, translate faithfully to `locale` (default `vi`), then speak. |
-| `/speak original` | Clean and speak the latest answer without translation. |
-| `/speak text <text>` | Speak exactly the text you supply. |
-| `/speak stop` | Stop this extension's generation or playback. Other audio and the coding agent are untouched. |
-| `/speak replay` | Play the last clip again from the cache. Never regenerates. |
-| `/speak status` | Show redacted configuration, key presence, job state, and cache size. Makes no request. |
-| `/speak quota` | Fetch account-wide ElevenLabs credits remaining and provider-reported billing figures. No speech. |
+| `/speak` | Clean and translate the latest completed answer to `locale`, then speak it. |
+| `/speak original` | Speak the latest completed answer without translation. |
+| `/speak text <text>` | Speak exactly the supplied text. |
+| `/speak stop` | Stop this extension's generation or playback. |
+| `/speak replay` | Replay the last cached clip; it never regenerates. |
+| `/speak status` | Show redacted settings, key presence, job state, and cache size. It makes no provider request. |
+| `/speak quota` | Perform the read-only ElevenLabs account quota lookup. It is not speech. |
+| `/speak provider [elevenlabs\|deepgram\|reset]` | Select the speech provider for this session. |
+| `/talk provider [deepgram\|elevenlabs\|reset]` | Select the voice-input provider for this session. Recording is not documented or enabled yet. |
 
-Speech works only in the interactive terminal. In other Pi modes speech subcommands say so and do nothing; `status` and `quota` are separate informational commands. One speech job runs at a time; a second request is refused rather than queued.
+Provider commands change only the current session and never write the configuration file. A running speech job keeps the provider captured when it started. `reset` returns to the provider in the file. Speech commands work only in the interactive terminal.
 
-### Compaction and resumed sessions
+## Provider behavior and limits
 
-Both `/speak` and `/speak original` need the agent to be idle with no queued work. They select the final answer of the latest user turn from the **current session's active transcript branch**, only when that answer finished normally. Compaction may remove the user turn or answer from model context; the original transcript entries remain eligible, including immediately after resuming the saved session before a new prompt. Summaries and context-only replacements are never spoken.
+ElevenLabs uses the configured voice, model, and output format. Deepgram uses `/v1/speak` with the configured Aura voice and MP3. Deepgram accepts at most 2,000 characters per request; ElevenLabs accepts at most 10,000, or a lower configured `hardLimitChars`. Text is refused rather than truncated, split, retried, or sent to another provider.
 
-The saved session's project working directory must match the command's current directory after absolute-path normalization. Missing project identity or another project's session is refused before translation or speech. No other session files or abandoned branches are searched. A latest unanswered, failed, aborted, truncated, or tool-only turn is reported rather than skipped—even when compaction has hidden it from model context. There is no fallback to an older successful answer.
+For localized `/speak`, a Deepgram Aura voice speaks only its own language. The language is the final segment of the voice ID: `aura-2-thalia-en` is `en`. It must match the primary language of the canonical locale. Use `/speak original` or another provider when it does not. `/speak original` and `/speak text` are not language-checked.
 
-Resuming restores answer history, not the extension's memory. After restart there is nothing to replay until a clip is played in that process, and a localized request may need fresh translation before checking cached audio. Run Pi's `/reload` after updating to activate this selection change.
+## Translation, progress, and cache
 
-### Quota and cost analysis
+Localized speech sends only the cleaned answer to the configured, isolated translation model. Reasoning and tool content are never spoken. Translation has one bounded request, no retry, and no original-language fallback. A failure identifies the observed validation or provider evidence and says that no text was sent to the selected speech provider.
 
-`/speak quota` makes one live, read-only account lookup using `ELEVENLABS_API_KEY`. It needs no voice/player/translation configuration and does not require the main agent to be idle. If a restricted key is denied access, check its subscription-read permissions yourself; the extension never expands them. It immediately reports `Checking ElevenLabs quota...` and returns control so `/speak stop` remains usable. A duplicate pending lookup is refused; session cleanup cancels it and suppresses stale results.
+A temporary line shows `Preparing`, `Translating`, `ElevenLabs` or `Deepgram`, and `Playing` only for phases actually entered. It clears on completion, refusal, failure, stop, and session cleanup without changing Pi's native working indicator.
 
-The result shows account-wide credits used/allowance, remaining credits, usage percentage, and the next reset in UTC. Usage beyond the allowance is shown separately; a zero allowance has no defined percentage. Credits are not a guaranteed number of speech characters: consumption depends on product/model/plan, and this account view includes other usage too.
+Generated clips are stored under `$XDG_CACHE_HOME/pi-speak` (or `~/.cache/pi-speak`) with owner-only permissions. Cache keys include the final text, provider, voice, model, format, voice revision, normalizer, and locale. Changing provider never reuses the other provider's clip. Replay uses only the existing clip and keeps only its player and cache checks.
 
-Cost analysis shows **provider-reported current overage** and **next invoice** in their reported currencies when available. Missing or invalid optional data is labeled unavailable, never zero. These figures are not added together, attributed to this extension, or converted into a per-speech price. PAYG balance/total spend and translation-model costs are not available from this endpoint. Check the ElevenLabs billing dashboard for the complete account picture.
+## Privacy and cost
 
-Only this explicit command queries `GET /v1/user/subscription`; there is no polling, speech, billing mutation, audio-cache access, or account-data persistence. The request has a 10-second deadline, 64 KiB response cap, no redirects and no retry. HTTP failures show the HTTP status and safe structured provider `type`, `code`, and legacy `status` identifiers when available (error JSON is capped at 4 KiB). For example, a reported `missing_permissions` directs you to subscription-read access, while `invalid_api_key` directs you to key validity. A 401 without reliable provider detail does not claim your key is invalid. Invalid/oversized/unreadable error bodies retain the HTTP status with an unconfirmed cause. Provider message text, request data, raw payloads/errors and credentials are never displayed or saved. Quota and invoice output is private account information; avoid sharing it publicly. `/speak status` remains local and network-free. After updating, run Pi's `/reload`, then `/speak quota`.
+Prepared text is sent to the selected speech provider on every audio-cache miss. Neither ElevenLabs' nor Deepgram's standard tier is a zero-retention guarantee. Translation may also be separately billed. After a timeout it is unknown whether an attempt was billed; there are no automatic retries or fallbacks. Cached audio can be sensitive even with private file permissions.
 
-### Progress while waiting
-
-An active speech job shows a separate line **above the editor**, including when Pi's main agent is idle: `Speech: Preparing...`, `Speech: Translating...`, `Speech: ElevenLabs...`, then `Speech: Playing...`. It shows the current phase, not a percentage. Original/literal speech skips translation; cache hits and replay skip work they do not perform. Fast phases may pass too quickly to notice.
-
-The line clears on completion, refusal, failure, `/speak stop`, or session/branch cleanup. Commands remain usable while it is visible. The existing footer status is retained; native Working/Whimsical is not changed. Progress is temporary UI only, not a conversation message or diagnostic log. Run Pi's `/reload` command after updating this extension to activate it.
-
-### Translation is not summarization
-
-Localized `/speak` sends only the cleaned selected answer to a separate, tool-free model call. It does not send repository files, conversation history, tool logs, or hidden reasoning, and does not change Pi's coding model, prompts, tools, or conversation. Instructions require faithful meaning, numbers, negation, identifiers, and qualifications, not a summary. Already-target-language answers still use one rendering call on a cache miss; the instruction asks to preserve suitable wording.
-
-Preflight checks TTS config/key, player, locale, source length, and translation model/authentication before inference. Translation has a 45-second deadline and up to 8192 output tokens (or the model's lower limit), no automatic retry/fallback, and incomplete/tool-call/unsupported-content/code-block results are refused. A completed answer may include thinking blocks; only its text blocks are used, while reasoning and signatures are discarded without logging, caching, or speech. Thinking-only results are refused. Translated output must also fit `hardLimitChars`. Failure never sends the original-language answer as a fallback. Structural checks do not prove linguistic accuracy; verify bilingual quality yourself.
-
-`/speak stop` also cancels translation. A canceled or late result cannot trigger TTS or playback. Translation errors suppress raw provider payloads to avoid logging credentials or source text.
-
-### Diagnosing translation failures
-
-The next failure reports what was observed: setup/authentication, deadline, provider-reported error or abort, token-limit truncation, incomplete output, unsupported/tool content, no usable text (including thinking-only), code markup, or output length. A thrown exception without a reliable cause stays **unknown**; it is not guessed to be offline, an authentication problem, or rate limiting. No failure triggers an automatic retry, fallback, or configuration change, and none sends text to ElevenLabs. Inference billing may still be uncertain after a request starts.
-
-When recording succeeds, the existing failure notification ends with `[diagnostic <id>]`. Search the current Pi session's JSONL file for that ID or `"customType":"speak-translation-failure"` (normal sessions are under `~/.pi/agent/sessions/`). The matching entry has `type: "custom"` and a metadata-only `data` object:
-
-- `version`, `diagnosticId`, `code`, `stage`, timestamp and elapsed milliseconds.
-- Configured provider/model/locale/thinking identifiers (bounded to 128 characters), whether inference started, billing uncertainty, and the configured output-token cap when known.
-- The observed stop reason and counts of text/thinking/tool/other blocks when a result exists; unknown values are mapped to `unknown` or `other`.
-
-No source/translated text, source hashes, reasoning/signatures, credentials, headers, raw error messages, or provider payloads are recorded. HTTP status is not available through the inspected result interface, so it is omitted rather than extracted from error strings. These entries do not enter model context or start an agent turn. They follow Pi's session storage and retention; `--no-session` keeps them in memory only. Do not share entire session files as diagnostic logs: ordinary conversation entries can contain private text.
-
-Recording is best effort. If it throws, the original failure is still shown once, without a diagnostic reference. Stopped, cancelled, late, and replaced-session jobs produce no failure record. Successful speech does not produce diagnostic entries. This makes the next intermittent failure inspectable; it does not establish the cause of an earlier failure that lacked this evidence.
-
-### What is spoken
-
-- **Answer cleanup (both modes, before translation):** code blocks, unfenced command output (shell prompt lines, diffs, stack frames, one-line JSON), commit hashes, images, HTML, link addresses, and bare URLs are removed; link labels, inline identifiers, numbers, negations, and qualifications are kept; a table becomes one sentence saying it is in the text response. Nothing is summarized or reinterpreted.
-- **`/speak text`:** your wording is sent as typed. Only terminal escape sequences and control characters are removed, and runs of whitespace become one space.
-- **Length:** at most 10000 characters (Unicode code points), or the configured lower limit. Localized speech checks both cleaned source and translated output. Longer text is refused with its length; nothing is truncated or split.
-
-## Cache
-
-Generated clips are stored in `$XDG_CACHE_HOME/pi-speak` (default `~/.cache/pi-speak`), in an owner-only directory with owner-only files. File names are hashes of everything that affects the audio (text, voice, model, format, voice revision), so no source text is stored. An audio cache hit makes no ElevenLabs request. Locale is part of the audio key (`original` for original/literal modes), so changing speech locale does not reuse another locale's audio. Adding this discriminator changes keys from the base release: older clips may miss once on a new explicit request; they are not automatically deleted or regenerated.
-
-Up to 32 valid translations are cached in session memory by source hash, locale, translation model/settings, and prompt/normalizer versions; source and translated text are not persisted. Oldest entries are evicted, and session/branch navigation clears them. A valid translation can be reused after TTS failure. With both caches available, a repeated localized request makes no model or TTS call. After restart or memory eviction, a new translation call may be needed before audio lookup. `/speak replay` always makes zero model/TTS calls and plays the previous clip unchanged even if locale was edited.
-
-Clips are kept for 7 days from their last use and the cache is capped at 100 MiB; the oldest are removed first and a clip that is playing is never removed. To clear the cache by hand, delete that directory.
-
-## Cost, privacy, and limits
-
-- Each translation miss may incur separately billed inference on the explicitly selected provider; local usage accounting and integration with Pi's core totals are not claimed. Each audio cache miss is one billable ElevenLabs request. There are no automatic retries and no fallback to another model, voice, or provider. After a timeout or network failure it is unknown whether the attempt was billed, and cancelling a request is not known to restore any allowance.
-- The prepared text is sent to ElevenLabs on every cache miss. According to ElevenLabs' documentation (checked 2026-10-02), zero-retention mode is available only to enterprise customers, so assume standard requests are retained by the provider.
-- Cached audio on disk can be sensitive. Permissions limit access to your user; they are not encryption.
-- Other processes you run, and other Pi extensions, run with your permissions and can read the environment, this configuration, and the cache. This extension does not defend against them.
-- This version does **not** scan text for secrets before sending it. Do not speak credentials or confidential text.
-- Usage is not tracked locally. Use the limits on your ElevenLabs account or key.
+The provider keys remain in the Pi process environment. Same-user processes and other Pi extensions run with Pi's permissions and may read that environment, this configuration, or the cache. Do not speak credentials or confidential text.
 
 ## Not in this version
 
-These are intentionally absent and documented in `openspec/changes/archive/2026-10-08-add-manual-speak-extension/design.md` under "Deferred Capabilities", so each can become its own specification:
-
-- `/speak summary` (running it says it is unavailable)
-- confirmation prompts for long text
-- secret-pattern blocking before sending
-- `/speak cache-clear` (running it says it is unavailable)
-- local usage accounting
-
-## Removal
-
-Stop passing `-e .../extensions/speak/index.ts`, delete `~/.config/pi-speak` and `~/.cache/pi-speak`, and revoke the API key in ElevenLabs.
+Voice recording and `/talk` recording controls are intentionally not documented yet. Push-to-talk recording is a later wave. `/speak summary`, confirmation prompts, secret-pattern blocking, cache clearing, and local usage accounting are also not available.
 
 ## Development
 
 ```bash
-npm run check   # typecheck and all tests, using mocked HTTP and mocked player processes
+npm run check
 ```
 
-The tests need no key, network, or audio device. `COMPATIBILITY.md` records what was checked against Pi 0.87.1 and 0.99.2, the ElevenLabs documentation, and the `ffplay` player, and what remains unverified.
+Tests use mocked HTTP and player processes; they need no key, network, or audio device.

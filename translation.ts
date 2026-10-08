@@ -61,6 +61,8 @@ export class Translator {
     timeoutMs?: number;
   }): Promise<string> {
     const { text, config, registry } = options;
+    const speechProvider = config.provider === "deepgram" ? "Deepgram" : "ElevenLabs";
+    const noSpeech = (message: string) => `${message} Nothing was sent to ${speechProvider}.`;
     const started = Date.now();
     const identifier = (value: string) =>
       value.replace(/\p{Cc}/gu, "").slice(0, 128);
@@ -101,32 +103,32 @@ export class Translator {
       if (!config.translation || !registry)
         throw failure(
           "setup",
-          "Translation is not configured. Set translation.provider/model in the speech config; use /speak original or /speak text meanwhile.",
+          noSpeech("Translation is not configured. Set translation.provider/model in the speech config; use /speak original or /speak text meanwhile."),
         );
       const { provider, model: modelId } = config.translation;
       const model = registry.find(provider, modelId);
       if (!model)
         throw failure(
           "setup",
-          "Configured translation model was not found in Pi's registry. Nothing was sent.",
+          noSpeech("Configured translation model was not found in Pi's registry."),
         );
       // Pi virtual models can route to another provider/model at request time.
       if (model.api === "pi-virtual")
         throw failure(
           "setup",
-          "Choose a concrete translation model, not a virtual routing model. Nothing was sent.",
+          noSpeech("Choose a concrete translation model, not a virtual routing model."),
         );
       evidence.stage = "authentication";
       if (!registry.hasConfiguredAuth(model))
         throw failure(
           "setup",
-          "Translation model authentication is missing. Configure it in Pi; no speech was sent.",
+          noSpeech("Translation model authentication is missing. Configure it in Pi."),
         );
       const auth = await abortable(registry.getApiKeyAndHeaders(model), signal);
       if (!auth.ok)
         throw failure(
           "setup",
-          "Translation model authentication could not be resolved. Nothing was sent.",
+          noSpeech("Translation model authentication could not be resolved."),
         );
       signal.throwIfAborted();
       evidence.stage = "setup";
@@ -134,7 +136,7 @@ export class Translator {
       if (!Number.isInteger(maxTokens) || maxTokens < 1)
         throw failure(
           "setup",
-          "Translation model has no usable output limit. Nothing was sent to ElevenLabs.",
+          noSpeech("Translation model has no usable output limit."),
         );
       evidence.maxTokens = maxTokens;
       const validateLength = (value: string) => {
@@ -142,7 +144,7 @@ export class Translator {
         if (!length.ok)
           throw failure(
             "output-length",
-            `Translation is ${length.length} characters; limit ${length.limit}. Nothing was sent to ElevenLabs. Use a shorter passage.`,
+            noSpeech(`Translation is ${length.length} characters; limit ${length.limit}. Use a shorter passage.`),
           );
       };
       const settings = {
@@ -225,27 +227,27 @@ export class Translator {
       if (response.stopReason === "error")
         throw failure(
           "provider-error",
-          "Translation provider reported an error. Nothing was sent to ElevenLabs.",
+          noSpeech("Translation provider reported an error."),
         );
       if (response.stopReason === "aborted")
         throw failure(
           "provider-aborted",
-          "Translation provider reported an aborted result. Nothing was sent to ElevenLabs.",
+          noSpeech("Translation provider reported an aborted result."),
         );
       if (response.stopReason === "length")
         throw failure(
           "truncated",
-          "Translation output was truncated (token limit). Nothing was sent to ElevenLabs.",
+          noSpeech("Translation output was truncated (token limit)."),
         );
       if (blocks.tool || blocks.other || response.stopReason === "toolUse")
         throw failure(
           "unsupported-content",
-          "Translation returned unsupported or tool content. Nothing was sent to ElevenLabs.",
+          noSpeech("Translation returned unsupported or tool content."),
         );
       if (response.stopReason !== "stop")
         throw failure(
           "incomplete",
-          "Translation did not complete normally. Nothing was sent to ElevenLabs.",
+          noSpeech("Translation did not complete normally."),
         );
       // Reasoning/signatures never enter speech text, caches, or diagnostics.
       const translated = normalizeExplicitText(
@@ -257,12 +259,12 @@ export class Translator {
       if (!translated)
         throw failure(
           "no-text",
-          "Translation returned no usable text (empty or thinking-only). Nothing was sent to ElevenLabs.",
+          noSpeech("Translation returned no usable text (empty or thinking-only)."),
         );
       if (/```|~~~/.test(translated))
         throw failure(
           "code-markup",
-          "Translation returned code markup instead of plain prose. Nothing was sent to ElevenLabs.",
+          noSpeech("Translation returned code markup instead of plain prose."),
         );
       validateLength(translated);
       signal.throwIfAborted();
@@ -276,13 +278,13 @@ export class Translator {
       if (controller.signal.aborted)
         throw failure(
           "timeout",
-          `Translation timed out during ${evidence.stage}. Nothing was sent to ElevenLabs.`,
+          noSpeech(`Translation timed out during ${evidence.stage}.`),
         );
       if (error instanceof TranslationError) throw error;
       // Never display provider error payloads: they can contain credentials or source text.
       throw failure(
         "unknown",
-        `Translation failed during ${evidence.stage}; cause unknown. Nothing was sent to ElevenLabs.`,
+        noSpeech(`Translation failed during ${evidence.stage}; cause unknown.`),
       );
     } finally {
       clearTimeout(timer);

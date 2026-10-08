@@ -19,7 +19,8 @@ import {
   type SpeakConfig,
   type SpeechProvider,
 } from "./config.ts";
-import { redact, synthesize } from "./elevenlabs.ts";
+import { synthesize as synthesizeDeepgram } from "./deepgram.ts";
+import { redact, synthesize as synthesizeElevenLabs } from "./elevenlabs.ts";
 import { fetchQuota } from "./quota.ts";
 import { NORMALIZER_VERSION, checkLength } from "./text.ts";
 import { Translator, type TranslationRegistry } from "./translation.ts";
@@ -48,6 +49,7 @@ type Phase = "preparing" | "translating" | "generating" | "playing";
 interface Job {
   controller: AbortController;
   speechProviderOverride?: SpeechProvider;
+  provider?: SpeechProvider;
   phase: Phase;
   player?: PlayerHandle;
   ui: SpeakUi;
@@ -274,10 +276,13 @@ export class SpeechController {
   }
 
   private show(job: Job, text: Phase | undefined): void {
+    const label = text === "generating"
+      ? job.provider === "deepgram" ? "Deepgram" : "ElevenLabs"
+      : text === undefined ? undefined : PHASE_LABELS[text];
     try {
       job.ui.setWidget?.(
         PROGRESS_KEY,
-        text === undefined ? undefined : [`Speech: ${PHASE_LABELS[text]}...`],
+        label === undefined ? undefined : [`Speech: ${label}...`],
       );
     } catch {
       // Progress is cosmetic; a UI failure must not block speech or cancellation.
@@ -334,9 +339,19 @@ export class SpeechController {
     }
   }
 
+  private redactFailureMessage(message: string): string {
+    return redact(
+      redact(
+        message,
+        readProviderApiKey(this.deps.env, "elevenlabs") ?? "",
+      ),
+      readProviderApiKey(this.deps.env, "deepgram") ?? "",
+    ).slice(0, 200);
+  }
+
   private describeError(error: unknown): string {
     const message = error instanceof Error ? error.message : String(error);
-    return redact(message, readApiKey(this.deps.env) ?? "").slice(0, 200);
+    return this.redactFailureMessage(message);
   }
 
   private cacheFor(config: SpeakConfig): AudioCache {
@@ -352,6 +367,8 @@ export class SpeechController {
   private async preflight(
     job: Job,
     text?: string,
+    generation = true,
+    localized = false,
   ): Promise<SpeakConfig | undefined> {
     const loaded = await loadConfig(
       this.deps.env,
@@ -364,13 +381,6 @@ export class SpeechController {
       return undefined;
     }
     const provider = effectiveSpeechProvider(loaded.config, job.speechProviderOverride);
-    if (provider === "deepgram") {
-      job.ui.notify(
-        "Deepgram speech is not available yet. Nothing was sent. Use /speak provider elevenlabs.",
-        "warning",
-      );
-      return undefined;
-    }
     const config: SpeakConfig = {
       ...loaded.config,
       provider,
@@ -389,15 +399,51 @@ export class SpeechController {
         return undefined;
       }
     }
-    if (
-      provider === "elevenlabs" &&
-      (!config.providers.elevenlabs.voiceId || !config.providers.elevenlabs.modelId)
-    ) {
-      job.ui.notify(
-        "ElevenLabs speech is not configured: set providers.elevenlabs.voiceId and providers.elevenlabs.modelId. Nothing was sent.",
-        "warning",
-      );
-      return undefined;
+    if (generation) {
+      const apiKey = readProviderApiKey(this.deps.env, provider);
+      if (localized && !apiKey) {
+        job.ui.notify(
+          `${provider === "elevenlabs" ? API_KEY_ENV : "DEEPGRAM_API_KEY"} is not set. Nothing was sent.`,
+          "warning",
+        );
+        return undefined;
+      }
+      if (
+        provider === "elevenlabs" &&
+        (!config.providers.elevenlabs.voiceId || !config.providers.elevenlabs.modelId)
+      ) {
+        job.ui.notify(
+          "ElevenLabs speech is not configured: set providers.elevenlabs.voiceId and providers.elevenlabs.modelId. Nothing was sent.",
+          "warning",
+        );
+        return undefined;
+      }
+      if (provider === "deepgram") {
+        const voice = config.providers.deepgram.voice;
+        if (
+          !voice ||
+          voice === "SET_YOUR_AUTHORIZED_VOICE_ID" ||
+          !/-[a-z]{2}$/i.test(voice)
+        ) {
+          job.ui.notify(
+            "Deepgram speech is not configured: set providers.deepgram.voice to an authorized voice ending in -<lang>. Nothing was sent.",
+            "warning",
+          );
+          return undefined;
+        }
+      }
+      if (localized && provider === "deepgram") {
+        const voice = config.providers.deepgram.voice!;
+        const voiceLanguage = voice.slice(voice.lastIndexOf("-") + 1).toLowerCase();
+        const localeLanguage = config.locale.split("-")[0]!.toLowerCase();
+        if (voiceLanguage !== localeLanguage) {
+          job.ui.notify(
+            `Deepgram voice language ${voiceLanguage} does not match locale ${config.locale} (primary language ${localeLanguage}). Use /speak original or another provider. Nothing was sent.`,
+            "warning",
+          );
+          return undefined;
+        }
+      }
     }
     const player = await resolveExecutable(
       config.player.command,
@@ -420,16 +466,10 @@ export class SpeechController {
     localized = false,
     registry?: TranslationRegistry,
   ): Promise<void> {
-    const config = await this.preflight(job, text);
+    const config = await this.preflight(job, text, true, localized);
     if (!config) return;
+    job.provider = config.provider;
     if (localized) {
-      if (!readApiKey(this.deps.env)) {
-        job.ui.notify(
-          `${API_KEY_ENV} is not set. Nothing was sent.`,
-          "warning",
-        );
-        return;
-      }
       text = await this.translator.render({
         text,
         config,
@@ -447,44 +487,70 @@ export class SpeechController {
       key: cacheKey({
         text,
         provider: config.provider,
-        voiceId: config.providers.elevenlabs.voiceId ?? "",
-        modelId: config.providers.elevenlabs.modelId ?? "",
-        outputFormat: config.providers.elevenlabs.outputFormat,
-        voiceRevision: config.providers.elevenlabs.voiceRevision,
+        voiceId:
+          config.provider === "elevenlabs"
+            ? config.providers.elevenlabs.voiceId ?? ""
+            : config.providers.deepgram.voice ?? "",
+        modelId:
+          config.provider === "elevenlabs"
+            ? config.providers.elevenlabs.modelId ?? ""
+            : "aura",
+        outputFormat:
+          config.provider === "elevenlabs"
+            ? config.providers.elevenlabs.outputFormat
+            : "mp3",
+        voiceRevision:
+          config.provider === "elevenlabs"
+            ? config.providers.elevenlabs.voiceRevision
+            : 0,
         normalizerVersion: NORMALIZER_VERSION,
         speechLocale: localized ? config.locale : "original",
       }),
-      extension: clipExtension(config.providers.elevenlabs.outputFormat),
+      extension: config.provider === "elevenlabs"
+        ? clipExtension(config.providers.elevenlabs.outputFormat)
+        : "mp3",
     };
 
     let path = await cache.get(clip.key, clip.extension);
     if (!this.live(job)) return;
     if (!path) {
-      const apiKey = readApiKey(this.deps.env);
+      const apiKey = readProviderApiKey(this.deps.env, config.provider);
       if (!apiKey) {
         job.ui.notify(
-          `${API_KEY_ENV} is not set. Nothing was sent.`,
+          `${config.provider === "elevenlabs" ? API_KEY_ENV : "DEEPGRAM_API_KEY"} is not set. Nothing was sent.`,
           "warning",
         );
         return;
       }
       job.phase = "generating";
       this.show(job, "generating");
-      const result = await synthesize(
-        {
-          text,
-          voiceId: config.providers.elevenlabs.voiceId ?? "",
-          modelId: config.providers.elevenlabs.modelId ?? "",
-          outputFormat: config.providers.elevenlabs.outputFormat,
-          apiKey,
-          timeoutMs: config.requestTimeoutMs,
-          signal: job.controller.signal,
-        },
-        this.deps.fetchFn,
-      );
+      const result = config.provider === "elevenlabs"
+        ? await synthesizeElevenLabs(
+            {
+              text,
+              voiceId: config.providers.elevenlabs.voiceId ?? "",
+              modelId: config.providers.elevenlabs.modelId ?? "",
+              outputFormat: config.providers.elevenlabs.outputFormat,
+              apiKey,
+              timeoutMs: config.requestTimeoutMs,
+              signal: job.controller.signal,
+            },
+            this.deps.fetchFn,
+          )
+        : await synthesizeDeepgram(
+            {
+              text,
+              voice: config.providers.deepgram.voice ?? "",
+              apiKey,
+              timeoutMs: config.requestTimeoutMs,
+              signal: job.controller.signal,
+            },
+            this.deps.fetchFn,
+          );
       if (!this.live(job)) return;
       if (!result.ok) {
-        if (result.kind !== "cancelled") job.ui.notify(result.message, "error");
+        if (result.kind !== "cancelled")
+          job.ui.notify(this.redactFailureMessage(result.message), "error");
         return;
       }
       path = await cache.put(clip.key, clip.extension, result.bytes);
@@ -494,7 +560,7 @@ export class SpeechController {
   }
 
   private async replayClip(job: Job, clip: Clip): Promise<void> {
-    const config = await this.preflight(job);
+    const config = await this.preflight(job, undefined, false);
     if (!config) return;
     const cache = this.cacheFor(config);
     const path = await cache.get(clip.key, clip.extension);

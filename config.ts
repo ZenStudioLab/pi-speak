@@ -480,10 +480,12 @@ export function describeConfig(
     ? config.providers.elevenlabs.voiceId
       ? `...${config.providers.elevenlabs.voiceId.slice(-4)} (revision ${config.providers.elevenlabs.voiceRevision})`
       : "not configured"
-    : config.providers.deepgram.voice ?? "not configured";
+    : config.providers.deepgram.voice
+      ? `...${config.providers.deepgram.voice.slice(-4)}`
+      : "not configured";
   const model = provider === "elevenlabs"
     ? config.providers.elevenlabs.modelId ?? "not configured"
-    : config.providers.deepgram.sttModel;
+    : "Aura voice model";
   const format = provider === "elevenlabs" ? config.providers.elevenlabs.outputFormat : "mp3";
   const limit = Math.min(config.hardLimitChars, PROVIDER_HARD_LIMIT_CEILINGS[provider]);
   const inputProvider = options.inputProviderOverride ?? config.input.provider;
@@ -495,6 +497,7 @@ export function describeConfig(
     `player: ${config.player.command}`,
     `limit: ${limit} characters, timeout ${config.requestTimeoutMs} ms`,
     `input provider: ${inputProvider}${options.inputProviderOverride ? " (session override)" : ""}`,
+    `input model: ${inputProvider === "elevenlabs" ? config.providers.elevenlabs.sttModel : config.providers.deepgram.sttModel}`,
     `input language: ${config.input.language ?? "auto-detect"}`,
     `${API_KEY_ENV}: ${keys.elevenlabs ? "present" : "missing"}`,
     `${DEEPGRAM_API_KEY_ENV}: ${keys.deepgram ? "present" : "missing"}`,
