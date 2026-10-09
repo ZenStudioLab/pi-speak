@@ -24,8 +24,7 @@ export type DeliveryContext = Pick<TalkContext, "isIdle" | "model">;
 export interface HoldHandle {
   readonly context: Pick<TalkContext, "ui" | "isIdle" | "model">;
   target: Starting | Recording;
-  /** True from the moment the recorder runs, when the hold removes its typed Spaces. */
-  recorderRunning: boolean;
+  /** Called when the recorder runs, when the hold removes its typed Spaces. */
   onRecorderRunning: (() => void) | undefined;
 }
 

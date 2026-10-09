@@ -125,7 +125,7 @@ export class TalkController {
   startHold(ctx: TalkContext): HoldHandle | undefined {
     if (this.active || ctx.mode !== "tui") return undefined;
     const claim: Starting = { phase: "starting", cancel: new AbortController(), hold: undefined };
-    const hold: HoldHandle = { context: ctx, target: claim, recorderRunning: false, onRecorderRunning: undefined };
+    const hold: HoldHandle = { context: ctx, target: claim, onRecorderRunning: undefined };
     claim.hold = hold;
     void this.start(ctx, "send", claim);
     return hold;
@@ -289,7 +289,6 @@ export class TalkController {
     this.active = current;
     if (claim.hold) {
       claim.hold.target = current;
-      claim.hold.recorderRunning = true;
       claim.hold.onRecorderRunning?.();
     }
     // Only Escape is taken, and only while the audio can still be discarded.

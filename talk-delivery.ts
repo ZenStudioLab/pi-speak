@@ -135,8 +135,7 @@ export class TranscriptDelivery {
     }
     const draft = ui.getEditorText();
     if (match.listed) {
-      const parts = [match.target, match.args, draft.trim() === "" ? "" : draft];
-      return ui.setEditorText(parts.filter((part) => part !== "").join(" "));
+      return ui.setEditorText([match.target, match.args, draft.trim()].filter((part) => part !== "").join(" "));
     }
     if (draft.trim() === "" && match.args === "") return ui.setEditorText(match.target);
     this.append(ui, text);

@@ -51,8 +51,20 @@ interface SpentHold {
 }
 
 /**
+ * The hold in progress. It is module state, not instance state: Pi runs the extension factory again
+ * for each new runtime (`/new`, `/resume`, `/fork`), which builds a new detector, and repeats that keep
+ * arriving after the change must neither start a recording nor type (D17).
+ */
+let spentHold: SpentHold | undefined;
+
+/** Test seam: forgets the hold in progress, so tests do not leak it into each other. */
+export function resetSpentHold(): void {
+  spentHold = undefined;
+}
+
+/**
  * Recognizes a held Space from the terminal's key repeat, starts and ends a recording through the
- * controller (D17, ADR-0008), and consumes the hold's Spaces. The spent state outlives session
+ * controller (D17, ADR-0008), and consumes the hold's Spaces. The spent hold outlives session
  * changes, so repeats that keep arriving after a change neither start a recording nor type.
  */
 export class HoldSpace {
@@ -63,7 +75,6 @@ export class HoldSpace {
   private listener = 0;
   /** Bumped by `reset`; the Space removal of an earlier session does nothing. */
   private session = 0;
-  private spent: SpentHold | undefined;
   private cancelTimer: (() => void) | undefined;
   /** Identifies the current timer, so a late timer or deferral does nothing. */
   private armed = 0;
@@ -104,17 +115,16 @@ export class HoldSpace {
     if (kind === "ignored") return undefined;
     const now = this.clock.now();
     // A hold whose timer a session change cleared ends at the first input after the quiet gap.
-    if (this.spent && !this.cancelTimer && now - this.spent.lastSpaceAt > QUIET_GAP_MS) this.endSpent();
+    if (spentHold && !this.cancelTimer && now - spentHold.lastSpaceAt > QUIET_GAP_MS) this.endSpent();
     if (kind === "space") return this.onSpace(now);
     if (kind === "release") {
-      if (this.spent) this.endSpent();
+      if (spentHold) this.endSpent();
       else this.breakRun();
       return undefined;
     }
-    const spent = this.spent;
-    if (kind === "other" && spent?.handle && !spent.discarded) {
-      spent.discarded = true;
-      this.target.endHold(spent.handle, "discard");
+    if (kind === "other" && spentHold?.handle && !spentHold.discarded) {
+      spentHold.discarded = true;
+      this.target.endHold(spentHold.handle, "discard");
     }
     this.breakRun();
     return undefined;
@@ -131,11 +141,10 @@ export class HoldSpace {
   }
 
   private onSpace(now: number): { consume: true } | undefined {
-    const spent = this.spent;
-    if (spent) {
-      spent.lastSpaceAt = now;
+    if (spentHold) {
+      spentHold.lastSpaceAt = now;
       this.armTimer();
-      return spent.handle ? { consume: true } : undefined;
+      return spentHold.handle ? { consume: true } : undefined;
     }
     const repeat = this.lastRunAt !== undefined && now - this.lastRunAt <= REPEAT_GAP_MS;
     this.repeats = repeat ? this.repeats + 1 : 0;
@@ -146,7 +155,7 @@ export class HoldSpace {
       return undefined;
     }
     const handle = this.target.startHold(ctx);
-    this.spent = { handle, lastSpaceAt: now, discarded: false };
+    spentHold = { handle, lastSpaceAt: now, discarded: false };
     this.armTimer();
     if (!handle) {
       this.typed++;
@@ -174,9 +183,9 @@ export class HoldSpace {
   }
 
   private endSpent(): void {
-    const spent = this.spent;
+    const spent = spentHold;
     if (!spent) return;
-    this.spent = undefined;
+    spentHold = undefined;
     this.clearTimer();
     this.breakRun();
     if (spent.handle && !spent.discarded) this.target.endHold(spent.handle, "send");
