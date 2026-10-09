@@ -2,6 +2,15 @@ import type { ThinkingLevel } from "@earendil-works/pi-ai";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  checkedString,
+  ConfigProblem,
+  fail,
+  integerInRange,
+  isRecord,
+  parseLocale,
+} from "./config-validation.ts";
+import { parseInput, type InputConfig } from "./input-settings.ts";
 
 export const VOICE_ID_PLACEHOLDER = "SET_YOUR_AUTHORIZED_VOICE_ID";
 export const API_KEY_ENV = "ELEVENLABS_API_KEY";
@@ -32,6 +41,10 @@ export interface DeepgramConfig {
 export interface Shortcuts {
   send: string[];
   transcribe: string[];
+  command: string[];
+  skill: string[];
+  /** `input.holdSpace` as read at load; it takes effect after a reload. */
+  holdSpace: boolean;
 }
 
 /** The keys of one mode as the status lines and help name them, for example `alt+t / alt+y`. */
@@ -39,19 +52,18 @@ export function formatKeys(keys: string[]): string {
   return keys.join(" / ");
 }
 
+/** Every push-to-talk key as Pi registered it at load, of all four modes. */
+export const pushToTalkKeys = (shortcuts: Shortcuts): string[] => [
+  ...shortcuts.send,
+  ...shortcuts.transcribe,
+  ...shortcuts.command,
+  ...shortcuts.skill,
+];
+
 export interface SpeakConfig {
   provider: SpeechProvider;
   providers: { elevenlabs: ElevenLabsConfig; deepgram: DeepgramConfig };
-  input: {
-    provider: SpeechProvider;
-    language?: string;
-    maxSeconds: number;
-    shortcut: string[];
-    transcribeShortcut: string[];
-    sendWhenBusy: "interrupt" | "wait";
-    stopOnPhrase: boolean;
-    stopPhrases: string[];
-  };
+  input: InputConfig;
   locale: string;
   translation?: { provider: string; model: string; thinking?: ThinkingLevel };
   hardLimitChars: number;
@@ -72,13 +84,6 @@ const DEFAULTS = {
   voiceRevision: 1,
   elevenLabsSttModel: "scribe_v2",
   deepgramSttModel: "nova-3",
-  inputProvider: "deepgram" as const,
-  inputMaxSeconds: 120,
-  inputShortcut: "alt+t",
-  inputTranscribeShortcut: "alt+shift+t",
-  inputSendWhenBusy: "interrupt" as const,
-  inputStopOnPhrase: false,
-  inputStopPhrases: ["let's go"],
   hardLimitChars: HARD_LIMIT_CEILING,
   requestTimeoutMs: 45_000,
   player: {
@@ -129,40 +134,6 @@ export function readProviderApiKey(
 ): string | undefined {
   const name = provider === "elevenlabs" ? API_KEY_ENV : DEEPGRAM_API_KEY_ENV;
   return env[name]?.trim() || undefined;
-}
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-class ConfigProblem extends Error {}
-
-function fail(problem: string): never {
-  throw new ConfigProblem(problem);
-}
-
-function integerInRange(
-  value: unknown,
-  name: string,
-  min: number,
-  max: number,
-): number {
-  if (typeof value !== "number" || !Number.isInteger(value))
-    fail(`${name} must be an integer`);
-  if (value < min || value > max)
-    fail(`${name} must be between ${min} and ${max}`);
-  return value;
-}
-
-function checkedString(
-  value: unknown,
-  name: string,
-  pattern: RegExp,
-  message: string,
-): string {
-  if (typeof value !== "string" || value.trim() === "")
-    fail(`${name} is not set`);
-  if (!pattern.test(value)) fail(message);
-  return value;
 }
 
 function optionalString(
@@ -222,16 +193,6 @@ function parseCache(value: unknown): SpeakConfig["cache"] {
       365,
     ),
   };
-}
-
-function parseLocale(value: unknown, name = "locale"): string {
-  if (typeof value !== "string" || value === "")
-    fail(`${name} must be a non-empty BCP-47 language tag`);
-  try {
-    return Intl.getCanonicalLocales(value)[0]!;
-  } catch {
-    return fail(`${name} must be a valid BCP-47 language tag`);
-  }
 }
 
 /** The canonical form of a BCP-47 tag typed in a command, or undefined when it is malformed. */
@@ -358,84 +319,6 @@ function parseProviders(value: unknown): SpeakConfig["providers"] {
         "providers.deepgram.sttModel contains unsupported characters",
       ),
     },
-  };
-}
-
-function parseStopPhrases(value: unknown): string[] {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 10)
-    fail("input.stopPhrases must be a list of 1 to 10 phrases");
-  return value.map((phrase) => {
-    const trimmed = typeof phrase === "string" ? phrase.trim() : "";
-    if (trimmed.length < 1 || trimmed.length > 40)
-      fail("input.stopPhrases entries must be strings of 1 to 40 characters");
-    return trimmed;
-  });
-}
-
-/** One key or a list of 1 to 4 keys, as a list. */
-function parseShortcutKeys(value: unknown, name: string): string[] {
-  const keys = Array.isArray(value) ? value : [value];
-  if (keys.length < 1 || keys.length > 4)
-    fail(`${name} must be one key or a list of 1 to 4 keys`);
-  return keys.map((key) =>
-    checkedString(key, name, /^.{1,100}$/, `${name} must be a non-empty string or a list of 1 to 4 non-empty strings`),
-  );
-}
-
-function parseInput(value: unknown): SpeakConfig["input"] {
-  if (value === undefined)
-    return {
-      provider: DEFAULTS.inputProvider,
-      maxSeconds: DEFAULTS.inputMaxSeconds,
-      shortcut: [DEFAULTS.inputShortcut],
-      transcribeShortcut: [DEFAULTS.inputTranscribeShortcut],
-      sendWhenBusy: DEFAULTS.inputSendWhenBusy,
-      stopOnPhrase: DEFAULTS.inputStopOnPhrase,
-      stopPhrases: [...DEFAULTS.inputStopPhrases],
-    };
-  if (!isRecord(value)) fail("input must be an object");
-  const unknown = Object.keys(value).filter(
-    (key) =>
-      !["provider", "language", "maxSeconds", "shortcut", "transcribeShortcut", "sendWhenBusy", "stopOnPhrase", "stopPhrases"].includes(key),
-  );
-  if (unknown.length > 0)
-    fail(`input contains unknown key(s): ${unknown.join(", ")}`);
-  const provider = value.provider ?? DEFAULTS.inputProvider;
-  if (provider !== "deepgram" && provider !== "elevenlabs")
-    fail('input.provider must be "deepgram" or "elevenlabs"');
-  const sendWhenBusy = value.sendWhenBusy ?? DEFAULTS.inputSendWhenBusy;
-  if (sendWhenBusy !== "interrupt" && sendWhenBusy !== "wait")
-    fail('input.sendWhenBusy must be "interrupt" or "wait"');
-  const stopOnPhrase = value.stopOnPhrase ?? DEFAULTS.inputStopOnPhrase;
-  if (typeof stopOnPhrase !== "boolean") fail("input.stopOnPhrase must be true or false");
-  const shortcut = parseShortcutKeys(value.shortcut ?? DEFAULTS.inputShortcut, "input.shortcut");
-  const transcribeShortcut = parseShortcutKeys(
-    value.transcribeShortcut ?? DEFAULTS.inputTranscribeShortcut,
-    "input.transcribeShortcut",
-  );
-  const seen = new Set<string>();
-  for (const key of [...shortcut, ...transcribeShortcut]) {
-    if (seen.has(key.toLowerCase()))
-      fail(`input.shortcut and input.transcribeShortcut must be different keys; "${key}" is repeated`);
-    seen.add(key.toLowerCase());
-  }
-  return {
-    provider,
-    language:
-      value.language === undefined
-        ? undefined
-        : parseLocale(value.language, "input.language"),
-    maxSeconds: integerInRange(
-      value.maxSeconds ?? DEFAULTS.inputMaxSeconds,
-      "input.maxSeconds",
-      1,
-      300,
-    ),
-    shortcut,
-    transcribeShortcut,
-    sendWhenBusy,
-    stopOnPhrase,
-    stopPhrases: parseStopPhrases(value.stopPhrases ?? DEFAULTS.inputStopPhrases),
   };
 }
 

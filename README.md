@@ -1,6 +1,6 @@
 # Speak
 
-Hear a Pi answer in a configurable language (default `vi`), or speak text you type, through the selected speech provider. Dictate a prompt by push-to-talk: one key sends it to the agent as soon as it is transcribed, and a second key only adds the text to the composer for you to review. **The default key `alt+t` now sends; use `alt+shift+t` to review first.** Nothing is translated, spoken, recorded, or sent anywhere unless you run `/speak`, run `/talk`, or press a push-to-talk shortcut. Loading, reloading, prompts, tools, and agent completion are silent.
+Hear a Pi answer in a configurable language (default `vi`), or speak text you type, through the selected speech provider. Dictate a prompt by push-to-talk: one key sends it to the agent as soon as it is transcribed, and a second key only adds the text to the composer for you to review. **The default key `alt+t` now sends; use `alt+shift+t` to review first.** Two more keys turn a spoken command or skill name into text in the editor (`alt+m`, `alt+i`), and an optional setting lets you hold Space to dictate. Nothing is translated, spoken, recorded, or sent anywhere unless you run `/speak`, run `/talk`, press a push-to-talk shortcut, or, with `input.holdSpace` on, hold Space. Loading, reloading, prompts, tools, and agent completion are silent.
 
 This extension is local to this repository. It is loaded explicitly with `pi -e` and is not part of the published package.
 
@@ -41,6 +41,10 @@ This extension is local to this repository. It is loaded explicitly with `pi -e`
        "maxSeconds": 120,
        "shortcut": "alt+t",
        "transcribeShortcut": "alt+shift+t",
+       "commandShortcut": "alt+m",
+       "skillShortcut": "alt+i",
+       "commandAliases": { "model": "/model", "apply loop": "/opsx-apply-loop" },
+       "holdSpace": false,
        "sendWhenBusy": "interrupt",
        "stopOnPhrase": false,
        "stopPhrases": ["let's go"]
@@ -63,7 +67,7 @@ This extension is local to this repository. It is loaded explicitly with `pi -e`
 
    **What is required.** Only the selected provider's voice settings are needed: `providers.elevenlabs.voiceId` and `modelId`, or `providers.deepgram.voice` (an Aura voice whose last segment is its language, such as `aura-2-thalia-en`). Everything else has a default, and `translation` is unconfigured by default.
 
-   **Defaults.** `provider` is `elevenlabs`. The ElevenLabs `outputFormat` is `mp3_44100_128`, `voiceRevision` is `1`, and `sttModel` is `scribe_v2`; the Deepgram `sttModel` is `nova-3`. `input.provider` is `deepgram`, `input.maxSeconds` is `120` (range 1–300), `input.shortcut` (the key that sends) is `alt+t`, `input.transcribeShortcut` (the key that only transcribes) is `alt+shift+t`, `input.sendWhenBusy` is `interrupt` (or `wait`), `input.stopOnPhrase` is `false` and `input.stopPhrases` is `["let's go"]` (see [Spoken stop phrase](#spoken-stop-phrase)), and `input.language` is unset, so the provider detects the language. Each shortcut setting also accepts a list of 1 to 4 keys (see [Extra shortcut keys](#extra-shortcut-keys)), and no key may appear twice across both, ignoring case. `locale` is `vi`, `hardLimitChars` is `10000` (it may lower, never raise, a provider's limit), `requestTimeoutMs` is `45000`, and the player and cache are as shown. Unknown keys are rejected, so a pasted secret is refused rather than stored.
+   **Defaults.** `provider` is `elevenlabs`. The ElevenLabs `outputFormat` is `mp3_44100_128`, `voiceRevision` is `1`, and `sttModel` is `scribe_v2`; the Deepgram `sttModel` is `nova-3`. `input.provider` is `deepgram`, `input.maxSeconds` is `120` (range 1–300), `input.shortcut` (the key that sends) is `alt+t`, `input.transcribeShortcut` (the key that only transcribes) is `alt+shift+t`, `input.commandShortcut` is `alt+m`, `input.skillShortcut` is `alt+i`, `input.commandAliases` is empty (see [Voice commands and skills](#voice-commands-and-skills)), `input.holdSpace` is `false` (see [Hold Space to talk](#hold-space-to-talk)), `input.sendWhenBusy` is `interrupt` (or `wait`), `input.stopOnPhrase` is `false` and `input.stopPhrases` is `["let's go"]` (see [Spoken stop phrase](#spoken-stop-phrase)), and `input.language` is unset, so the provider detects the language. Each shortcut setting also accepts a list of 1 to 4 keys (see [Extra shortcut keys](#extra-shortcut-keys)), and no key may appear twice across all four shortcut settings, ignoring case. `locale` is `vi`, `hardLimitChars` is `10000` (it may lower, never raise, a provider's limit), `requestTimeoutMs` is `45000`, and the player and cache are as shown. Unknown keys are rejected, so a pasted secret is refused rather than stored.
 
    **Voice revision.** Raise `providers.elevenlabs.voiceRevision` whenever you change or re-clone the voice behind the same ID, so older cached clips are not reused.
 
@@ -100,12 +104,17 @@ Invalid configuration is reported when you use `/speak`, `/speak status`, or voi
 | `/talk send` | Start recording; run it again to stop, transcribe, and **send** the composer. Same as `alt+t`. |
 | `/talk provider [deepgram\|elevenlabs\|reset]` | Report or select the voice-input provider for this session. |
 | `/talk help` or `/talk ?` | Show the same combined help as `/speak help`. |
+| `/talk command` | Start recording; run it again to stop and put the spoken command into the editor. Nothing runs. Same as `alt+m`. |
+| `/talk skill` | Start recording; run it again to stop and put the spoken skill into the editor. Nothing runs. Same as `alt+i`. |
 | `alt+t` (`input.shortcut`, one key or a list) | Push-to-talk that sends: the same as `/talk send`. |
 | `alt+shift+t` (`input.transcribeShortcut`, one key or a list) | Push-to-talk that only transcribes: the same as `/talk`. |
+| `alt+m` (`input.commandShortcut`, one key or a list) | Push-to-talk for a spoken command: the same as `/talk command`. |
+| `alt+i` (`input.skillShortcut`, one key or a list) | Push-to-talk for a spoken skill: the same as `/talk skill`. |
+| Space, held (`input.holdSpace`, off by default) | Hold to record, let go to send. See [Hold Space to talk](#hold-space-to-talk). |
 
 Provider and locale commands never write the configuration file. A selection stays in force across session switching, forking, and tree navigation, and ends on restart, reload, or `reset`, which returns to the value in the file. A running speech job or recording keeps the provider and locale captured when it started. Speech and voice input work only in the interactive terminal.
 
-**Help.** `/speak help`, `/talk help`, and `?` in place of `help` print the same text: every form above, every shortcut key registered at load and which keys send, what `Esc` does, and the effective speech locale. Any unknown argument to `/speak` or `/talk` prints it too. It reads the configuration file (for the locale) but makes no request and works in every run mode; a shortcut you edited but have not reloaded is not shown, and if the file has an error, it still shows the registered shortcuts and says so.
+**Help.** `/speak help`, `/talk help`, and `?` in place of `help` print the same text: every form above, every shortcut key registered at load and which keys send, Space when `input.holdSpace` is on, what a spoken command does with the editor and the draft, what `Esc` does, and the effective speech locale. Any unknown argument to `/speak` or `/talk` prints it too. It reads the configuration file (for the locale) but makes no request and works in every run mode; a shortcut you edited but have not reloaded is not shown, and if the file has an error, it still shows the registered shortcuts and says so.
 
 **Speech locale.** The locale used for a `/speak` is, in order, the tag in `/speak in <tag>`, the session locale from `/speak locale <tag>`, then `locale` in the file (default `vi`). Tags are checked and canonicalized (`en-us` becomes `en-US`); a malformed tag changes nothing and makes no request. The same locale drives the Deepgram voice-language check, the translation, and the translation and audio cache keys. `/speak original` and `/speak text` never translate.
 
@@ -115,40 +124,93 @@ Dictate a prompt: press a shortcut, speak, press a shortcut again. **The key tha
 
 > **Warning: the default `alt+t` now sends.** A misheard phrase reaches the agent without review, and with the default `input.sendWhenBusy` of `interrupt` it can redirect a turn that is already running. Use `alt+shift+t` or `/talk` to review first, or set `input.sendWhenBusy` to `wait`.
 
-**Setup.** Install one of `rec`, `arecord`, or `ffmpeg` (tried in that order; `ffmpeg` records from PulseAudio's default source). Export the key for the input provider (`DEEPGRAM_API_KEY` for `deepgram`, `ELEVENLABS_API_KEY` for `elevenlabs`). The optional `input` block selects the provider, a language, the length cap (default 120 seconds, at most 300), the two shortcuts, and `sendWhenBusy` as shown above. `input.language` is independent of the speech `locale`; omit it and the provider detects the language. If you only dictate, you may leave out `providers.elevenlabs.voiceId`; a placeholder left in it is still refused. Changed shortcuts take effect after `/reload`. Loading reads the configuration once for the shortcuts; if it cannot be read, only the two defaults are registered. `/speak status` shows the recording tool it found, key presence, and the effective input provider, model, and language.
+**Setup.** Install one of `rec`, `arecord`, or `ffmpeg` (tried in that order; `ffmpeg` records from PulseAudio's default source). Export the key for the input provider (`DEEPGRAM_API_KEY` for `deepgram`, `ELEVENLABS_API_KEY` for `elevenlabs`). The optional `input` block selects the provider, a language, the length cap (default 120 seconds, at most 300), the four shortcuts, the command aliases, `holdSpace`, and `sendWhenBusy` as shown above. `input.language` is independent of the speech `locale`; omit it and the provider detects the language. If you only dictate, you may leave out `providers.elevenlabs.voiceId`; a placeholder left in it is still refused. Changed shortcuts take effect after `/reload`. Loading reads the configuration once for the shortcuts; if it cannot be read, only the four defaults are registered. `/speak status` shows the recording tool it found, key presence, and the effective input provider, model, and language.
 
-**Extra shortcut keys.** `input.shortcut` and `input.transcribeShortcut` each accept one key or a list of 1 to 4 keys, so you can bind more than one key to a mode:
+**Extra shortcut keys.** `input.shortcut`, `input.transcribeShortcut`, `input.commandShortcut`, and `input.skillShortcut` each accept one key or a list of 1 to 4 keys, so you can bind more than one key to a mode:
 
 ```json
 "shortcut": ["alt+t", "alt+y"],
 "transcribeShortcut": ["alt+shift+t", "alt+shift+y"]
 ```
 
-Every listed key works like the first: the `shortcut` keys send and the `transcribeShortcut` keys only transcribe, and any key can start a recording. A key repeated anywhere across both settings, ignoring case, is a configuration error, and then only the two defaults are registered. Help and the recording status lines name every key of each mode, for example `alt+t / alt+y`. Note that `alt+y` is Pi's editor yank-pop (paste an earlier deleted text after `Ctrl+Y`); binding it here replaces yank-pop, and Pi shows a shortcut conflict notice at startup. The defaults `alt+t` and `alt+shift+t` have no such conflict.
+Every listed key works like the first: the `shortcut` keys send, the `transcribeShortcut` keys only transcribe, the `commandShortcut` keys fill in a command, the `skillShortcut` keys fill in a skill, and any key can start a recording. A key repeated anywhere across the four settings, ignoring case, is a configuration error, and then only the four defaults are registered. Help and the recording status lines name every key of each mode, for example `alt+t / alt+y`. Note that `alt+y` is Pi's editor yank-pop (paste an earlier deleted text after `Ctrl+Y`); binding it here replaces yank-pop, and Pi shows a shortcut conflict notice at startup. The defaults `alt+t` and `alt+shift+t` have no such conflict.
 
 **Controls.** Either shortcut, `/talk`, or `/talk send` starts a recording; starting carries no decision.
 
 | Key | State | Action |
 | --- | --- | --- |
-| `alt+t`, `alt+shift+t`, `/talk`, or `/talk send` | idle | Start recording. This first stops this extension's own speech so the microphone does not capture it. |
-| `alt+t`, `alt+shift+t`, `/talk`, or `/talk send` | starting (waiting for this extension's speech to stop) | Cancel the attempt. Nothing is recorded or sent. |
+| `alt+t`, `alt+shift+t`, `alt+m`, `alt+i`, `/talk`, `/talk send`, `/talk command`, or `/talk skill` | idle | Start recording. This first stops this extension's own speech so the microphone does not capture it. |
+| `alt+t`, `alt+shift+t`, `alt+m`, `alt+i`, `/talk`, `/talk send`, `/talk command`, or `/talk skill` | starting (waiting for this extension's speech to stop) | Cancel the attempt. Nothing is recorded or sent. |
 | `Esc` | starting | Cancel the attempt. Nothing is recorded or sent, and the editor does not receive the key. |
 | `alt+t` or `/talk send` | recording | Stop, transcribe, and send. A recording shorter than 0.5 seconds is discarded with a message. |
 | `alt+shift+t` or `/talk` | recording | Stop and transcribe only; the text is added to the composer. |
+| `alt+m` or `/talk command` | recording | Stop, transcribe, and put the spoken command into the editor. Nothing is sent. |
+| `alt+i` or `/talk skill` | recording | Stop, transcribe, and put the spoken skill into the editor. Nothing is sent. |
 | `alt+t` or `/talk send` | held at the time cap | Transcribe the held recording and send. |
 | `alt+shift+t` or `/talk` | held at the time cap | Transcribe the held recording and add the text to the composer only. |
+| `alt+m` or `/talk command`, `alt+i` or `/talk skill` | held at the time cap | Transcribe the held recording and put the spoken command, or skill, into the editor. |
 | `Esc` | recording or held | Discard the audio. Nothing is sent, and the editor does not receive the key. |
 | any push-to-talk key | transcribing | Refused with a message; one recording or transcription is active at a time. |
 
-While recording, a status line shows the elapsed time, a coarse input level, and the stop keys of each mode (which ones send); a flat level means the microphone may be muted or the wrong input. At `input.maxSeconds` the recorder stops and the audio is **held, unsent**: the status line names the send, transcribe-only, and discard keys, and nothing leaves the machine until you press one of the first two. Session switching, forking, tree navigation, reload, and shutdown also discard a recording or held audio. While a recording is starting, in progress, or held, `/speak` refuses to start new audio. Only `Esc` is intercepted, and only in those states; every other key, including Enter, reaches the editor as usual.
+While recording, a status line shows the elapsed time, a coarse input level, and the stop keys of each mode (which ones send); a flat level means the microphone may be muted or the wrong input. At `input.maxSeconds` the recorder stops and the audio is **held, unsent**: the status line names the send, transcribe-only, command, skill, and discard keys, and nothing leaves the machine until you press one of the first four. Session switching, forking, tree navigation, reload, and shutdown also discard a recording or held audio. While a recording is starting, in progress, or held, `/speak` refuses to start new audio. Only `Esc` is intercepted, and only in those states; every other key, including Enter, reaches the editor as usual.
 
-**What sending does.** The transcript is appended to the composer, and then the whole composer is sent as plain text: a slash command, prompt template, or skill command in it is **not** run, it is sent as words. If no model is selected, or Pi is compacting the conversation, nothing is sent: your draft and the transcript stay in the composer and a message says why (during compaction, press Enter to queue the message). The composer is cleared only after Pi accepts the send call; if the call itself fails, the text stays and the error is shown. A refusal Pi reports only after accepting the call, such as missing model credentials, is shown by Pi as an error after the composer was cleared. An empty or dropped transcript sends nothing. When the agent is already working, `input.sendWhenBusy` decides: `interrupt` (default) delivers the message to the running turn at once, `wait` queues it until the turn ends. The setting is read when the message is sent. Unless you turn on the [spoken stop phrase](#spoken-stop-phrase), there are no spoken commands and no open microphone, and nothing is ever sent automatically at the time cap.
+**What sending does.** The transcript is appended to the composer, and then the whole composer is sent as plain text: a slash command, prompt template, or skill command in it is **not** run, it is sent as words. If no model is selected, or Pi is compacting the conversation, nothing is sent: your draft and the transcript stay in the composer and a message says why (during compaction, press Enter to queue the message). The composer is cleared only after Pi accepts the send call; if the call itself fails, the text stays and the error is shown. A refusal Pi reports only after accepting the call, such as missing model credentials, is shown by Pi as an error after the composer was cleared. An empty or dropped transcript sends nothing. When the agent is already working, `input.sendWhenBusy` decides: `interrupt` (default) delivers the message to the running turn at once, `wait` queues it until the turn ends. The setting is read when the message is sent. Unless you turn on the [spoken stop phrase](#spoken-stop-phrase), the microphone is never open without you starting a recording, and nothing is ever sent automatically at the time cap. A spoken command or skill never sends anything either (see [Voice commands and skills](#voice-commands-and-skills)).
 
 **Spoken stop phrase.** See [below](#spoken-stop-phrase).
 
 **Provider and language are fixed when a recording starts.** `/talk provider ...` or a configuration edit made mid-recording applies to the next recording only.
 
-**Privacy.** Audio is kept in memory, never written to disk, logged, or cached, and released when the request ends or the recording is discarded. A recording you send (by stopping it, or by sending one held at the time cap) goes as one upload to the fixed production endpoint of the selected provider, with no redirects, retries, or fallback to the other provider. Neither Deepgram's nor ElevenLabs' standard tier is a zero-retention guarantee, and sent audio cannot be recalled. While the stop phrase is off, a recording you discard, or one held at the time cap and not sent, never leaves the machine; with it on, audio is streamed as you speak (see below). The transcript exists only in the composer or in the message you chose to send. Transcription is billed per audio second; after a timeout it is unknown whether the attempt was billed. The recorder runs without either API key in its environment, but it inherits audio variables such as `PULSE_SERVER`, so audio routing is your setting.
+**Privacy.** Audio is kept in memory, never written to disk, logged, or cached, and released when the request ends or the recording is discarded. A recording you send (by stopping it, by releasing one held at the time cap, or by letting go of a Space hold) goes as one upload to the fixed production endpoint of the selected provider, with no redirects, retries, or fallback to the other provider. Neither Deepgram's nor ElevenLabs' standard tier is a zero-retention guarantee, and sent audio cannot be recalled. While the stop phrase is off, a recording you discard, or one held at the time cap and not sent, never leaves the machine; with it on, audio is streamed as you speak (see below). The transcript exists only in the composer or in the message you chose to send. Transcription is billed per audio second; after a timeout it is unknown whether the attempt was billed. The recorder runs without either API key in its environment, but it inherits audio variables such as `PULSE_SERVER`, so audio routing is your setting.
+
+### Voice commands and skills
+
+`alt+m` (or `/talk command`) and `alt+i` (or `/talk skill`) start a recording like the other keys. Press the same key again to stop: the words are transcribed exactly as with the transcribe-only key, then matched against Pi's commands (`alt+m`: extension commands and prompt templates) or Pi's skills (`alt+i`). **The result goes into the editor and nothing runs.** You look at it and press Enter, and Pi runs it exactly as if you had typed it.
+
+**What lands in the editor.** The matched name becomes `/<name>` (or `/skill:<name>`) at the start of the editor, followed by the words you said after the name, and then by the draft that was already there. So **the draft becomes part of the command's arguments**. For example, with "fix the login bug" in the editor, saying "op sx apply loop, add speak voice input." and pressing `alt+m` leaves `/opsx-apply-loop add speak voice input fix the login bug`.
+
+**How names are matched.** Case, punctuation, spaces, hyphens, and colons are ignored, and Vietnamese letters match whether they arrive precomposed or with separate accent marks, so "op sx apply loop" finds `opsx-apply-loop`. The longest name that your first words (up to eight) spell wins. Duplicates that Pi lists as `name:2` match "name 2". An alias beats a name of the same spelling. Punctuation at the start or end of the arguments is dropped, so a full stop, question mark, or ellipsis after the last word does not appear. Nothing is guessed: there is no fuzzy matching.
+
+**When nothing is matched.** If no name matches, or two different names match equally, the words are added to the editor unchanged, as with the transcribe-only key, and a warning says so (it names the competing commands, and never repeats what you said). An empty transcript changes nothing.
+
+**Aliases.** `input.commandAliases` maps a spoken phrase to a target, for names that are hard to say or that transcription mishears, and to reach Pi's own interactive commands:
+
+```json
+"commandAliases": {
+  "model": "/model",
+  "new session": "/new",
+  "apply loop": "/opsx-apply-loop"
+}
+```
+
+A phrase is 1 to 40 characters and at most eight words, and needs at least one letter or digit; two phrases that spell the same once punctuation and spaces are ignored are an error. A target is one line of 2 to 200 characters starting with `/`; a target starting with `/skill:` is a skill alias and is used with `alt+i`, any other target with `alt+m`. There can be at most 50 aliases. A target may carry fixed words, such as `/opsx-apply-loop now`.
+
+**Interactive commands such as `/model` and `/new`.** Pi handles these in its editor screen and does not list them, so only an alias can reach them. Pi recognizes them by the whole editor text, so an alias to one is placed **alone**, and only into an **empty editor** with nothing said after it. With a draft in the editor, or words after the alias, the words are added as dictation instead, with a warning that the command needs an empty editor. An alias to a name Pi does list (such as `/opsx-apply-loop`) behaves like the name itself, with the draft following as arguments.
+
+**Editor only; no streaming.** Nothing is sent and no command is run by the key, whatever you say. A recording started with `alt+m` or `alt+i` is never streamed, even with the stop phrase on, so a spoken stop phrase cannot send it; it is uploaded once when you stop it, and it works with either provider. The mode is decided by the key that stops the recording: starting with `alt+t` and stopping with `alt+i` matches a skill.
+
+### Hold Space to talk
+
+Optionally, hold Space to record and let go to send, as in Claude Code's voice mode. It is off by default and changes nothing when off. Turn it on in the `input` block and run `/reload`:
+
+```json
+"input": { "holdSpace": true }
+```
+
+**How it feels.** A tap types a space as usual. When you hold Space, your terminal starts repeating it; the fourth Space (about half a second after you press) is recognized as a hold. The Spaces typed so far are removed from the end of the editor text as soon as the recorder runs, and the recording starts as if you had pressed `alt+t`. The status line says "release Space to send". Letting go sends it, exactly as the send key does: the same checks, `input.sendWhenBusy`, and the stop-phrase rules. Your terminal does not report the release, so it is noticed when no Space has arrived for 300 ms. If you let go while the recording is still starting, the attempt is cancelled and nothing is sent.
+
+**Typing another key discards the recording.** Once you press another key, the key repeat of Space stops, so a release could no longer be told from the typing. The key reaches the editor as usual, and the hold's recording is discarded, just as `Esc` discards it; nothing is sent, and with the stop phrase off nothing was uploaded. With the stop phrase on, audio already streamed to ElevenLabs is not recalled. `Esc` and the push-to-talk keys work as usual (the send key during a hold sends it once, and letting go then does nothing). Letting go only ever acts on the recording that hold started.
+
+**When it does nothing.** If a recording, a held recording, or a transcription already exists when the hold is recognized, the hold is busy: Spaces keep typing and nothing starts. If the recording cannot start (a missing key, for instance), the reason is shown once, the typed Spaces stay, and the rest of the hold is ignored.
+
+**Limits.**
+
+- **Key repeat must be on and faster than 120 ms** in your desktop settings, or a hold is never recognized. Terminals that encode repeated Spaces differently, and input methods that commit text together with a Space, do not count as a hold.
+- **Focus loss counts as letting go.** If the window loses focus while you hold Space, the repeats stop and the recording is sent.
+- **Dialogs.** Pi's input listener sees keys while a selector or dialog is open, so holding Space there can start a recording. `Esc` discards it before you let go.
+- **The cursor in the middle of the text.** The typed Spaces stay where they are and are sent with the draft.
+- **A merge within 300 ms.** On a terminal that reports no release, pressing Space again within 300 ms of letting go continues the same hold.
+- **Accidental holds.** Three Spaces typed by hand within 120 ms of each other, or Spaces typed during a pause in Pi (they arrive together), count as a hold: they are removed, `/speak` playback stops, and a recording starts. Letting go within half a second sends nothing, and with the stop phrase off nothing is uploaded either.
+- **Streaming.** With the stop phrase on, a hold-started recording streams to ElevenLabs as you speak, so audio from a hold you then abandon may already have left the machine.
 
 ### Spoken stop phrase
 
@@ -198,7 +260,7 @@ The provider keys remain in the Pi process environment. Same-user processes and 
 
 ## Not in this version
 
-`/speak summary`, confirmation prompts, secret-pattern blocking, cache clearing, and local usage accounting are not available. Voice input has no silence detection on this machine, no partial text, no open microphone, and no spoken command other than the optional stop phrase, which works with ElevenLabs only.
+`/speak summary`, confirmation prompts, secret-pattern blocking, cache clearing, and local usage accounting are not available. Voice input has no silence detection on this machine, no partial text, and no open microphone. A spoken command or skill goes into the editor and never runs by itself, and the only spoken action is the optional stop phrase, which works with ElevenLabs only.
 
 ## Development
 

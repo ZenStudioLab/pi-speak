@@ -1,8 +1,7 @@
-import { matchesKey } from "@earendil-works/pi-tui";
+import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 import {
   API_KEY_ENV,
   DEEPGRAM_API_KEY_ENV,
-  formatKeys,
   loadConfig,
   readProviderApiKey,
   type Shortcuts,
@@ -17,7 +16,9 @@ import {
 } from "./realtime.ts";
 import { startRecorder, wavFromPcm, type RecorderExit } from "./record.ts";
 import type { SpeakDeps, SpeechController } from "./speech-job.ts";
+import { TranscriptDelivery, type ListCommands } from "./talk-delivery.ts";
 import type {
+  HoldHandle,
   Recording,
   SendMessage,
   Starting,
@@ -25,17 +26,14 @@ import type {
   TalkMode,
   TalkUi,
 } from "./talk-state.ts";
+import { statusLine } from "./talk-status.ts";
 
 export type { SendMessage, TalkContext, TalkMode } from "./talk-state.ts";
 
 const STATUS_KEY = "speak-talk";
+/** The release of Escape reported by the terminal is not another press of it. */
+const isEscapePress = (data: string): boolean => matchesKey(data, "escape") && !isKeyRelease(data);
 const MIN_RECORDING_MS = 500;
-const LEVEL_BARS = "▁▂▃▄▅▆▇█";
-
-const formatElapsed = (ms: number): string => {
-  const seconds = Math.floor(ms / 1000);
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-};
 
 /**
  * Owns the single recording or transcription of this Pi process. Nothing here runs until the
@@ -46,20 +44,22 @@ const formatElapsed = (ms: number): string => {
 export class TalkController {
   private readonly deps: SpeakDeps;
   private readonly speech: SpeechController;
-  private readonly sendMessage: SendMessage;
+  private readonly delivery: TranscriptDelivery;
   private readonly shortcuts: Shortcuts;
   private active: Starting | Recording | undefined;
-  private compacting = false;
 
   constructor(
     deps: SpeakDeps,
     speech: SpeechController,
     sendMessage: SendMessage,
     shortcuts: Shortcuts,
+    listCommands: ListCommands,
   ) {
     this.deps = deps;
     this.speech = speech;
-    this.sendMessage = sendMessage;
+    this.delivery = new TranscriptDelivery(deps, sendMessage, listCommands, (message) =>
+      this.redactKeys(message),
+    );
     this.shortcuts = shortcuts;
     speech.speechBlock = () =>
       this.active && this.active.phase !== "transcribing"
@@ -68,8 +68,9 @@ export class TalkController {
   }
 
   /**
-   * A shortcut or `/talk [send]`: start, stop and transcribe, or transcribe a held recording. A press
-   * that only starts a recording carries no decision; the stopping `mode` is what counts.
+   * A shortcut or `/talk [send|command|skill]`: start, stop and transcribe, or transcribe a held recording.
+   * A press that only starts a recording carries no decision, except that the command and skill keys
+   * turn off streaming; the stopping `mode` is what counts.
    */
   async press(ctx: TalkContext, mode: TalkMode): Promise<void> {
     const ui = ctx.ui;
@@ -81,7 +82,7 @@ export class TalkController {
       return;
     }
     const active = this.active;
-    if (!active) return this.start(ctx);
+    if (!active) return this.start(ctx, mode);
     if (active.phase === "starting") {
       this.cancelStarting(active, ui);
     } else if (active.phase === "transcribing") {
@@ -89,7 +90,14 @@ export class TalkController {
         "A transcription is still in progress. Wait for it to finish.",
         "warning",
       );
-    } else if (active.phase === "held") {
+    } else {
+      this.stop(active, ctx, mode);
+    }
+  }
+
+  /** Stops a recording, or releases one held at the time cap, in `mode`; shared by the keys and by letting go of a Space hold. */
+  private stop(active: Recording, ctx: Pick<TalkContext, "ui" | "isIdle" | "model">, mode: TalkMode): void {
+    if (active.phase === "held") {
       active.delivery = { mode, context: ctx };
       // Held at the cap but not yet exited: transcribe once the recorder has exited.
       if (!active.live && active.pcm) this.upload(active, active.pcm);
@@ -99,7 +107,7 @@ export class TalkController {
       }
     } else if (this.deps.now() - active.startedAt < MIN_RECORDING_MS) {
       this.release(active);
-      ui.notify(
+      ctx.ui.notify(
         "Recording discarded: it was shorter than 0.5 seconds. Nothing was sent.",
         "info",
       );
@@ -110,9 +118,32 @@ export class TalkController {
     }
   }
 
+  /**
+   * Starts a recording for a Space hold, as the send key would, but only when nothing is starting,
+   * recording, held or transcribing. The handle follows that recording until it ends.
+   */
+  startHold(ctx: TalkContext): HoldHandle | undefined {
+    if (this.active || ctx.mode !== "tui") return undefined;
+    const claim: Starting = { phase: "starting", cancel: new AbortController(), hold: undefined };
+    const hold: HoldHandle = { context: ctx, target: claim, recorderRunning: false, onRecorderRunning: undefined };
+    claim.hold = hold;
+    void this.start(ctx, "send", claim);
+    return hold;
+  }
+
+  /** Acts only on the hold's own recording (D17): letting go sends it, typing discards it, and anything that ended it first leaves nothing to do. */
+  endHold(hold: HoldHandle, outcome: "send" | "discard"): void {
+    const target = hold.target;
+    if (this.active !== target || target.phase === "transcribing") return;
+    if (target.phase === "starting") return this.cancelStarting(target, hold.context.ui);
+    if (outcome === "send") return this.stop(target, hold.context, "send");
+    this.release(target);
+    target.ui.notify("Recording discarded. Nothing was sent.", "info");
+  }
+
   /** Pi refuses a prompt while it compacts the conversation, so a send must not start then. */
   setCompacting(compacting: boolean): void {
-    this.compacting = compacting;
+    this.delivery.compacting = compacting;
   }
 
   /** Lifecycle cleanup: discards a recording or held audio and drops any transcript still due. */
@@ -123,18 +154,21 @@ export class TalkController {
     else if (active) this.release(active);
   }
 
-  private async start(ctx: Pick<TalkContext, "ui" | "isIdle" | "model">): Promise<void> {
+  private async start(
+    ctx: Pick<TalkContext, "ui" | "isIdle" | "model">,
+    mode: TalkMode,
+    claim: Starting = { phase: "starting", cancel: new AbortController(), hold: undefined },
+  ): Promise<void> {
     const ui = ctx.ui;
-    const claim: Starting = { phase: "starting", cancel: new AbortController() };
     this.active = claim;
     // Escape cancels an attempt that is not recording yet, so it never reaches the editor.
     const unsubscribeStarting = ui.onTerminalInput((data) => {
-      if (this.active !== claim || !matchesKey(data, "escape")) return undefined;
+      if (this.active !== claim || !isEscapePress(data)) return undefined;
       this.cancelStarting(claim, ui);
       return { consume: true };
     });
     try {
-      await this.begin(ctx, claim);
+      await this.begin(ctx, claim, mode);
     } finally {
       unsubscribeStarting();
     }
@@ -151,6 +185,7 @@ export class TalkController {
   private async begin(
     ctx: Pick<TalkContext, "ui" | "isIdle" | "model">,
     claim: Starting,
+    startMode: TalkMode,
   ): Promise<void> {
     const ui = ctx.ui;
     const abandon = (message: string) => {
@@ -167,7 +202,9 @@ export class TalkController {
       return abandon(`Voice input is not configured: ${loaded.problem}`);
     const { input, providers, requestTimeoutMs } = loaded.config;
     const provider = this.speech.inputOverride ?? input.provider;
-    if (input.stopOnPhrase && provider !== "elevenlabs")
+    // A recording started with the command or skill key is uploaded once, never streamed (D16).
+    const streams = input.stopOnPhrase && startMode !== "command" && startMode !== "skill";
+    if (streams && provider !== "elevenlabs")
       return abandon(
         "The stop phrase needs ElevenLabs, but the voice input provider is Deepgram. Nothing was recorded or sent. Run /talk provider elevenlabs, or turn off input.stopOnPhrase.",
       );
@@ -182,7 +219,7 @@ export class TalkController {
     if (this.active !== claim) return;
     // The recorder starts only once the connection is open, so no audio is lost while waiting for it.
     let session: RealtimeSession | undefined;
-    if (input.stopOnPhrase) {
+    if (streams) {
       const opened = await openRealtime({
         apiKey,
         language: input.language,
@@ -246,12 +283,18 @@ export class TalkController {
       delivery: undefined,
       unsubscribeInput: undefined,
       cancel: new AbortController(),
+      hold: claim.hold,
     };
     recording = current;
     this.active = current;
+    if (claim.hold) {
+      claim.hold.target = current;
+      claim.hold.recorderRunning = true;
+      claim.hold.onRecorderRunning?.();
+    }
     // Only Escape is taken, and only while the audio can still be discarded.
     current.unsubscribeInput = ui.onTerminalInput((data) => {
-      if (this.active !== current || !matchesKey(data, "escape")) return undefined;
+      if (this.active !== current || !isEscapePress(data)) return undefined;
       this.release(current);
       ui.notify("Recording discarded. Nothing was sent.", "info");
       return { consume: true };
@@ -340,7 +383,7 @@ export class TalkController {
   private failStream(rec: Recording, message: string): void {
     const text = rec.live!.session.text;
     this.release(rec);
-    if (text !== "") this.append(rec.ui, text);
+    if (text !== "") this.delivery.append(rec.ui, text);
     rec.ui.notify(
       `${this.redactKeys(message)} Nothing was sent.${text !== "" ? " The text transcribed so far was added to the composer." : ""}`,
       "error",
@@ -380,62 +423,13 @@ export class TalkController {
     );
   }
 
-  /**
-   * Appends the transcript and, in send mode, sends the whole composer as plain text. `sendWhenBusy`
-   * is read now. Pi reports a refusal of `pi.sendUserMessage` only later, so the refusals visible
-   * beforehand (no model, compaction in progress) keep the text in the composer without sending. The
-   * composer is cleared only after the send call returns; if it throws, the draft and transcript stay
-   * and the error is shown.
-   */
+  /** Reads what the mode needs, then hands the transcript over unless the recording was replaced meanwhile. */
   private async deliver(rec: Recording, text: string): Promise<void> {
-    const { ui } = rec;
-    const { mode, context } = rec.delivery!;
-    const loaded =
-      mode === "send"
-        ? await loadConfig(this.deps.env, this.deps.readFile, this.deps.home)
-        : undefined;
+    const delivery = rec.delivery!;
+    const loaded = await this.delivery.prepare(delivery.mode);
     if (this.active !== rec) return;
     this.release(rec);
-    this.append(ui, text);
-    if (!loaded) return;
-    if (!loaded.ok)
-      return ui.notify(
-        `The transcript was added to the composer but not sent: ${loaded.problem}`,
-        "error",
-      );
-    if (!context.model)
-      return ui.notify(
-        "The transcript was added to the composer but not sent: no model is selected. Select a model, then press Enter.",
-        "warning",
-      );
-    if (this.compacting)
-      return ui.notify(
-        "The transcript was added to the composer but not sent: Pi is compacting the conversation. Press Enter to queue the message.",
-        "warning",
-      );
-    try {
-      const deliverAs = loaded.config.input.sendWhenBusy === "wait" ? "followUp" : "steer";
-      this.sendMessage(
-        ui.getEditorText(),
-        context.isIdle()
-          ? { expandPromptTemplates: false }
-          : { deliverAs, expandPromptTemplates: false },
-      );
-      ui.setEditorText("");
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      ui.notify(
-        `Not sent: ${this.redactKeys(reason)}. The draft and transcript are still in the composer.`,
-        "error",
-      );
-    }
-  }
-
-  /** Adds the transcript after the existing text; it is never replaced. */
-  private append(ui: TalkUi, text: string): void {
-    const current = ui.getEditorText();
-    const separator = current !== "" && !/\s$/.test(current) ? " " : "";
-    ui.setEditorText(`${current}${separator}${text}`);
+    this.delivery.deliver(rec.ui, text, delivery, loaded);
   }
 
   /** Ends this recording on every path: recorder, keys, request, held audio, and status line. */
@@ -459,17 +453,8 @@ export class TalkController {
   }
 
   private render(rec: Recording): void {
-    let text: string;
-    if (rec.phase === "recording") {
-      const bar = LEVEL_BARS[rec.level - 1] ?? "·";
-      text = `● Recording ${formatElapsed(this.deps.now() - rec.startedAt)} ${bar} — ${formatKeys(this.shortcuts.send)} stop and send · ${formatKeys(this.shortcuts.transcribe)} stop, transcribe only · Esc discard`;
-    } else if (rec.phase === "held") {
-      text = `Recording limit reached (${rec.maxSeconds} s), not sent — ${formatKeys(this.shortcuts.send)} send · ${formatKeys(this.shortcuts.transcribe)} transcribe only · Esc discard`;
-    } else {
-      text = "Transcribing…";
-    }
     try {
-      rec.ui.setStatus(STATUS_KEY, text);
+      rec.ui.setStatus(STATUS_KEY, statusLine(rec, this.shortcuts, this.deps.now()));
     } catch {
       return;
     }

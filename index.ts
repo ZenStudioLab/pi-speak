@@ -3,14 +3,21 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
-import { canonicalLocale, loadConfig, type Shortcuts } from "./config.ts";
+import { canonicalLocale, loadConfig, pushToTalkKeys, type Shortcuts } from "./config.ts";
+import { HoldSpace } from "./hold-space.ts";
 import { SELECTION_MESSAGES, selectSessionAnswer } from "./session.ts";
 import { SpeechController, type SpeakDeps } from "./speech-job.ts";
 import { TalkController } from "./talk.ts";
 import { normalizeExplicitText, prepareAnswerText } from "./text.ts";
 import type { TranslationFailureRecord } from "./translation-failure.ts";
 
-const DEFAULT_SHORTCUTS: Shortcuts = { send: ["alt+t"], transcribe: ["alt+shift+t"] };
+const DEFAULT_SHORTCUTS: Shortcuts = {
+  send: ["alt+t"],
+  transcribe: ["alt+shift+t"],
+  command: ["alt+m"],
+  skill: ["alt+i"],
+  holdSpace: false,
+};
 
 const NOT_AVAILABLE = (name: string) =>
   `/speak ${name} is not available in this version.`;
@@ -112,13 +119,15 @@ function speakLatestAnswer(
 /**
  * Registers `/speak`, `/talk`, every push-to-talk shortcut, four lifecycle handlers that can
  * only cancel this extension's own work, and three compaction handlers that only note whether Pi is
- * compacting. Nothing is read, spawned, or sent at registration.
+ * compacting. With `holdSpace`, it also subscribes the Space listener on each session start. Nothing
+ * is read, spawned, or sent at registration.
  */
 export function registerSpeak(
   pi: ExtensionAPI,
   controller: SpeechController,
   talk: TalkController,
   shortcuts: Shortcuts = DEFAULT_SHORTCUTS,
+  holdSpace?: HoldSpace,
 ): void {
   pi.registerCommand("speak", {
     description: "Speak a Pi answer or supplied text (explicit request only)",
@@ -128,11 +137,12 @@ export function registerSpeak(
       ),
   });
   pi.registerCommand("talk", {
-    description: "Dictate into the composer by push-to-talk (`send` also sends it), or select the voice input provider",
+    description: "Dictate into the composer by push-to-talk (`send` also sends it, `command` and `skill` fill in a spoken command or skill), or select the voice input provider",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/).filter(Boolean);
       if (parts.length === 0) return talk.press(ctx, "transcribe");
-      if (parts.length === 1 && parts[0] === "send") return talk.press(ctx, "send");
+      if (parts.length === 1 && (parts[0] === "send" || parts[0] === "command" || parts[0] === "skill"))
+        return talk.press(ctx, parts[0]);
       if (parts.length === 1 && (parts[0] === "help" || parts[0] === "?"))
         return controller.help(ctx.ui);
       if (parts.length > 2 || parts[0] !== "provider") return controller.help(ctx.ui);
@@ -153,11 +163,27 @@ export function registerSpeak(
       handler: (ctx) => talk.press(ctx, "transcribe"),
     });
 
+  for (const key of shortcuts.command)
+    pi.registerShortcut(key as KeyId, {
+      description: "Start or stop push-to-talk voice input; stopping puts a spoken command into the editor (nothing runs)",
+      handler: (ctx) => talk.press(ctx, "command"),
+    });
+  for (const key of shortcuts.skill)
+    pi.registerShortcut(key as KeyId, {
+      description: "Start or stop push-to-talk voice input; stopping puts a spoken skill into the editor (nothing runs)",
+      handler: (ctx) => talk.press(ctx, "skill"),
+    });
+
   const reset = () => {
     controller.resetSession();
     talk.resetSession();
+    holdSpace?.reset();
   };
-  pi.on("session_shutdown", reset);
+  if (holdSpace) pi.on("session_start", (_event, ctx) => holdSpace.attach(ctx));
+  pi.on("session_shutdown", () => {
+    reset();
+    holdSpace?.detach();
+  });
   pi.on("session_before_switch", reset);
   pi.on("session_before_fork", reset);
   pi.on("session_tree", reset);
@@ -189,22 +215,28 @@ export default async function speak(
   };
   // If the file cannot be read now, the default keys are registered and the problem shows on first use.
   const loaded = await loadConfig(deps.env, deps.readFile, deps.home);
-  const shortcuts = loaded.ok
+  const shortcuts: Shortcuts = loaded.ok
     ? {
         send: loaded.config.input.shortcut,
         transcribe: loaded.config.input.transcribeShortcut,
+        command: loaded.config.input.commandShortcut,
+        skill: loaded.config.input.skillShortcut,
+        holdSpace: loaded.config.input.holdSpace,
       }
     : DEFAULT_SHORTCUTS;
   const controller = new SpeechController(deps, shortcuts);
+  const talk = new TalkController(
+    deps,
+    controller,
+    (text, options) => pi.sendUserMessage(text, options),
+    shortcuts,
+    () => pi.getCommands(),
+  );
   registerSpeak(
     pi,
     controller,
-    new TalkController(
-      deps,
-      controller,
-      (text, options) => pi.sendUserMessage(text, options),
-      shortcuts,
-    ),
+    talk,
     shortcuts,
+    shortcuts.holdSpace ? new HoldSpace(talk, pushToTalkKeys(shortcuts)) : undefined,
   );
 }

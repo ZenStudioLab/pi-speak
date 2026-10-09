@@ -9,7 +9,7 @@ import type { SpeakDeps } from "./speech-job.ts";
 export async function buildHelp(
   deps: Pick<SpeakDeps, "env" | "readFile" | "home">,
   sessionLocale: string | undefined,
-  { send, transcribe }: Shortcuts,
+  { send, transcribe, command, skill, holdSpace }: Shortcuts,
 ): Promise<string> {
   const loaded = await loadConfig(deps.env, deps.readFile, deps.home);
   let locale: string;
@@ -36,13 +36,21 @@ export async function buildHelp(
     "/speak help | ?        show this help",
     "/talk                  start recording; run it again to stop and transcribe only (nothing is sent)",
     "/talk send             start recording; run it again to stop, transcribe, and send the composer",
+    "/talk command          start recording; run it again to stop and put the spoken command into the editor (nothing runs)",
+    "/talk skill            start recording; run it again to stop and put the spoken skill into the editor (nothing runs)",
     "/talk provider [deepgram|elevenlabs|reset]  report or select the voice input provider for this session",
     "/talk help | ?         show this help",
     "",
     `${formatKeys(send)} sends: it stops a recording, transcribes it, and sends the composer (same as /talk send).`,
     `${formatKeys(transcribe)} transcribes only: it stops a recording and adds the text to the composer (same as /talk).`,
-    "Any of these keys or commands starts a recording; the one that stops it decides whether the message is sent.",
+    `${formatKeys(command)} command: it stops a recording and matches the first words to a Pi command or prompt template (same as /talk command).`,
+    `${formatKeys(skill)} skill: it stops a recording and matches the first words to a skill (same as /talk skill).`,
+    "Any of these keys or commands starts a recording; the one that stops it decides what happens to the text.",
+    "Command and skill keys: the result goes into the editor and nothing runs until you press Enter. The words after the name become the arguments, and your draft follows them as part of the arguments. Pi's own interactive commands, such as /model, need an alias in input.commandAliases and an empty editor. These recordings never stream, even with the stop phrase on.",
     "Escape: while a recording is starting it cancels the attempt; while recording or held at the time cap it discards the audio. Nothing is sent.",
+    ...(holdSpace
+      ? ["Space (input.holdSpace): hold Space to record and let go to send, as with the send key. Typing another key during a hold discards the recording; Escape does too."]
+      : []),
     `Speech locale: ${locale}`,
     `Stop phrase: ${stopPhrase}`,
     "Stop phrase (input.stopOnPhrase, ElevenLabs only): say a phrase from input.stopPhrases as the last words before a pause of about 1 second to stop and send. While on, audio streams to ElevenLabs as you speak; Escape sends nothing but cannot recall audio already sent. A key or /talk still stops the recording and decides whether the text is sent.",
