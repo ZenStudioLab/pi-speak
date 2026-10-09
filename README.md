@@ -1,6 +1,6 @@
 # Speak
 
-Hear a Pi answer in a configurable language (default `vi`), or speak text you type, through the selected speech provider. Dictate a prompt by push-to-talk and find the transcript in the composer, ready for you to review and send. Nothing is translated, spoken, recorded, or sent anywhere unless you run `/speak`, run `/talk`, or press the push-to-talk shortcut. Loading, reloading, prompts, tools, and agent completion are silent.
+Hear a Pi answer in a configurable language (default `vi`), or speak text you type, through the selected speech provider. Dictate a prompt by push-to-talk: one key sends it to the agent as soon as it is transcribed, and a second key only adds the text to the composer for you to review. **The default key `alt+t` now sends; use `alt+shift+t` to review first.** Nothing is translated, spoken, recorded, or sent anywhere unless you run `/speak`, run `/talk`, or press a push-to-talk shortcut. Loading, reloading, prompts, tools, and agent completion are silent.
 
 This extension is local to this repository. It is loaded explicitly with `pi -e` and is not part of the published package.
 
@@ -38,8 +38,10 @@ This extension is local to this repository. It is loaded explicitly with `pi -e`
      "input": {
        "provider": "deepgram",
        "language": "vi",
-       "maxSeconds": 60,
-       "shortcut": "alt+t"
+       "maxSeconds": 120,
+       "shortcut": "alt+t",
+       "transcribeShortcut": "alt+shift+t",
+       "sendWhenBusy": "interrupt"
      },
      "locale": "vi",
      "translation": {
@@ -59,7 +61,7 @@ This extension is local to this repository. It is loaded explicitly with `pi -e`
 
    **What is required.** Only the selected provider's voice settings are needed: `providers.elevenlabs.voiceId` and `modelId`, or `providers.deepgram.voice` (an Aura voice whose last segment is its language, such as `aura-2-thalia-en`). Everything else has a default, and `translation` is unconfigured by default.
 
-   **Defaults.** `provider` is `elevenlabs`. The ElevenLabs `outputFormat` is `mp3_44100_128`, `voiceRevision` is `1`, and `sttModel` is `scribe_v2`; the Deepgram `sttModel` is `nova-3`. `input.provider` is `deepgram`, `input.maxSeconds` is `60` (range 1–300), `input.shortcut` is `alt+t`, and `input.language` is unset, so the provider detects the language. `locale` is `vi`, `hardLimitChars` is `10000` (it may lower, never raise, a provider's limit), `requestTimeoutMs` is `45000`, and the player and cache are as shown. Unknown keys are rejected, so a pasted secret is refused rather than stored.
+   **Defaults.** `provider` is `elevenlabs`. The ElevenLabs `outputFormat` is `mp3_44100_128`, `voiceRevision` is `1`, and `sttModel` is `scribe_v2`; the Deepgram `sttModel` is `nova-3`. `input.provider` is `deepgram`, `input.maxSeconds` is `120` (range 1–300), `input.shortcut` (the key that sends) is `alt+t`, `input.transcribeShortcut` (the key that only transcribes) is `alt+shift+t`, `input.sendWhenBusy` is `interrupt` (or `wait`), and `input.language` is unset, so the provider detects the language. The two shortcuts must differ. `locale` is `vi`, `hardLimitChars` is `10000` (it may lower, never raise, a provider's limit), `requestTimeoutMs` is `45000`, and the player and cache are as shown. Unknown keys are rejected, so a pasted secret is refused rather than stored.
 
    **Voice revision.** Raise `providers.elevenlabs.voiceRevision` whenever you change or re-clone the voice behind the same ID, so older cached clips are not reused.
 
@@ -73,7 +75,7 @@ This extension is local to this repository. It is loaded explicitly with `pi -e`
    pi -e /absolute/path/to/pi-toolset/extensions/speak/index.ts
    ```
 
-Invalid configuration is reported when you use `/speak`, `/speak status`, or voice input, and does not stop Pi from starting. Loading reads the configuration file once, only to learn the shortcut.
+Invalid configuration is reported when you use `/speak`, `/speak status`, or voice input, and does not stop Pi from starting. Loading reads the configuration file once, only to learn the two shortcuts.
 
 ## Commands
 
@@ -83,39 +85,57 @@ Invalid configuration is reported when you use `/speak`, `/speak status`, or voi
 | --- | --- |
 | `/speak` | Clean and translate the latest completed answer to `locale`, then speak it. |
 | `/speak original` | Speak the latest completed answer without translation. |
+| `/speak in <tag>` | Speak the latest completed answer in the locale `<tag>`, for this command only. |
 | `/speak text <text>` | Speak exactly the supplied text. |
 | `/speak stop` | Stop this extension's generation or playback. |
 | `/speak replay` | Replay the last cached clip; it never regenerates. |
 | `/speak status` | Show redacted settings, key presence, job state, and cache size. It makes no provider request. |
 | `/speak quota` | Perform the read-only ElevenLabs account quota lookup. It is not speech. |
-| `/speak provider [elevenlabs\|deepgram\|reset]` | Select the speech provider for this session. |
-| `/talk` | Start recording; run it again to stop and transcribe; or transcribe a recording held at the time cap. Same as the shortcut. |
+| `/speak provider [elevenlabs\|deepgram\|reset]` | Report or select the speech provider for this session. |
+| `/speak locale [<tag>\|reset]` | Report or set the speech locale for this session (`reset` returns to `locale` in the file). |
+| `/speak help` or `/speak ?` | Show the combined help. |
+| `/talk` | Start recording; run it again to stop and transcribe only. Nothing is sent. Same as `alt+shift+t`. |
+| `/talk send` | Start recording; run it again to stop, transcribe, and **send** the composer. Same as `alt+t`. |
 | `/talk provider [deepgram\|elevenlabs\|reset]` | Report or select the voice-input provider for this session. |
-| `alt+t` (`input.shortcut`) | Push-to-talk, the same as `/talk` with no argument. |
+| `/talk help` or `/talk ?` | Show the same combined help as `/speak help`. |
+| `alt+t` (`input.shortcut`) | Push-to-talk that sends: the same as `/talk send`. |
+| `alt+shift+t` (`input.transcribeShortcut`) | Push-to-talk that only transcribes: the same as `/talk`. |
 
-Provider commands never write the configuration file. A selection stays in force across session switching, forking, and tree navigation, and ends on restart, reload, or `reset`, which returns to the provider in the file. A running speech job or recording keeps the provider captured when it started. Speech and voice input work only in the interactive terminal.
+Provider and locale commands never write the configuration file. A selection stays in force across session switching, forking, and tree navigation, and ends on restart, reload, or `reset`, which returns to the value in the file. A running speech job or recording keeps the provider and locale captured when it started. Speech and voice input work only in the interactive terminal.
+
+**Help.** `/speak help`, `/talk help`, and `?` in place of `help` print the same text: every form above, the two shortcuts registered at load and which one sends, what `Esc` does, and the effective speech locale. Any unknown argument to `/speak` or `/talk` prints it too. It reads the configuration file (for the locale) but makes no request and works in every run mode; a shortcut you edited but have not reloaded is not shown, and if the file has an error, it still shows the registered shortcuts and says so.
+
+**Speech locale.** The locale used for a `/speak` is, in order, the tag in `/speak in <tag>`, the session locale from `/speak locale <tag>`, then `locale` in the file (default `vi`). Tags are checked and canonicalized (`en-us` becomes `en-US`); a malformed tag changes nothing and makes no request. The same locale drives the Deepgram voice-language check, the translation, and the translation and audio cache keys. `/speak original` and `/speak text` never translate.
 
 ## Voice input
 
-Dictate a prompt: press the shortcut, speak, press it again, and the transcript is appended to the composer. The extension never submits the composer, replaces its text, or runs anything you said; you review the text and send it yourself.
+Dictate a prompt: press a shortcut, speak, press a shortcut again. **The key that stops the recording decides what happens.** `alt+t` (or `/talk send`) transcribes and then sends the whole composer, your draft plus the transcript, as one ordinary message, as if you had pressed Enter. `alt+shift+t` (or `/talk`) only appends the transcript to the composer, so you review the text and send it yourself.
 
-**Setup.** Install one of `rec`, `arecord`, or `ffmpeg` (tried in that order; `ffmpeg` records from PulseAudio's default source). Export the key for the input provider (`DEEPGRAM_API_KEY` for `deepgram`, `ELEVENLABS_API_KEY` for `elevenlabs`). The optional `input` block selects the provider, a language, the length cap, and the shortcut as shown above. `input.language` is independent of the speech `locale`; omit it and the provider detects the language. If you only dictate, you may leave out `providers.elevenlabs.voiceId`; a placeholder left in it is still refused. A changed `input.shortcut` takes effect after `/reload`. `/speak status` shows the recording tool it found, key presence, and the effective input provider, model, and language.
+> **Warning: the default `alt+t` now sends.** A misheard phrase reaches the agent without review, and with the default `input.sendWhenBusy` of `interrupt` it can redirect a turn that is already running. Use `alt+shift+t` or `/talk` to review first, or set `input.sendWhenBusy` to `wait`.
 
-**Controls.**
+**Setup.** Install one of `rec`, `arecord`, or `ffmpeg` (tried in that order; `ffmpeg` records from PulseAudio's default source). Export the key for the input provider (`DEEPGRAM_API_KEY` for `deepgram`, `ELEVENLABS_API_KEY` for `elevenlabs`). The optional `input` block selects the provider, a language, the length cap (default 120 seconds, at most 300), the two shortcuts, and `sendWhenBusy` as shown above. `input.language` is independent of the speech `locale`; omit it and the provider detects the language. If you only dictate, you may leave out `providers.elevenlabs.voiceId`; a placeholder left in it is still refused. Changed shortcuts take effect after `/reload`. `/speak status` shows the recording tool it found, key presence, and the effective input provider, model, and language.
+
+**Controls.** Either shortcut, `/talk`, or `/talk send` starts a recording; starting carries no decision.
 
 | Key | State | Action |
 | --- | --- | --- |
-| `alt+t` or `/talk` | idle | Start recording. This first stops this extension's own speech so the microphone does not capture it. |
-| `alt+t` or `/talk` | recording | Stop and transcribe. A recording shorter than 0.5 seconds is discarded with a message. |
-| `alt+t` or `/talk` | held at the time cap | Transcribe the held recording. |
+| `alt+t`, `alt+shift+t`, `/talk`, or `/talk send` | idle | Start recording. This first stops this extension's own speech so the microphone does not capture it. |
+| `alt+t`, `alt+shift+t`, `/talk`, or `/talk send` | starting (waiting for this extension's speech to stop) | Cancel the attempt. Nothing is recorded or sent. |
+| `Esc` | starting | Cancel the attempt. Nothing is recorded or sent, and the editor does not receive the key. |
+| `alt+t` or `/talk send` | recording | Stop, transcribe, and send. A recording shorter than 0.5 seconds is discarded with a message. |
+| `alt+shift+t` or `/talk` | recording | Stop and transcribe only; the text is added to the composer. |
+| `alt+t` or `/talk send` | held at the time cap | Transcribe the held recording and send. |
+| `alt+shift+t` or `/talk` | held at the time cap | Transcribe the held recording and add the text to the composer only. |
 | `Esc` | recording or held | Discard the audio. Nothing is sent, and the editor does not receive the key. |
-| `alt+t` or `/talk` | transcribing | Refused with a message; one recording or transcription is active at a time. |
+| any push-to-talk key | transcribing | Refused with a message; one recording or transcription is active at a time. |
 
-While recording, a status line shows the elapsed time, a coarse input level, and these keys; a flat level means the microphone may be muted or the wrong input. At `input.maxSeconds` the recorder stops and the audio is **held, unsent**: it waits for the next press to transcribe it, or `Esc` to discard it. Session switching, forking, tree navigation, reload, and shutdown also discard a recording or held audio. While a recording is in progress or held, `/speak` refuses to start new audio. Only `Esc` is intercepted, and only while a recording is in progress or held; every other key, including Enter, reaches the editor as usual.
+While recording, a status line shows the elapsed time, a coarse input level, and both stop keys (which one sends); a flat level means the microphone may be muted or the wrong input. At `input.maxSeconds` the recorder stops and the audio is **held, unsent**: the status line names the send, transcribe-only, and discard keys, and nothing leaves the machine until you press one of the first two. Session switching, forking, tree navigation, reload, and shutdown also discard a recording or held audio. While a recording is starting, in progress, or held, `/speak` refuses to start new audio. Only `Esc` is intercepted, and only in those states; every other key, including Enter, reaches the editor as usual.
+
+**What sending does.** The transcript is appended to the composer, and then the whole composer is sent as plain text: a slash command, prompt template, or skill command in it is **not** run, it is sent as words. If no model is selected, or Pi is compacting the conversation, nothing is sent: your draft and the transcript stay in the composer and a message says why (during compaction, press Enter to queue the message). The composer is cleared only after Pi accepts the send call; if the call itself fails, the text stays and the error is shown. A refusal Pi reports only after accepting the call, such as missing model credentials, is shown by Pi as an error after the composer was cleared. An empty or dropped transcript sends nothing. When the agent is already working, `input.sendWhenBusy` decides: `interrupt` (default) delivers the message to the running turn at once, `wait` queues it until the turn ends. The setting is read when the message is sent. There are no spoken commands, no open microphone, and no automatic send at the time cap.
 
 **Provider and language are fixed when a recording starts.** `/talk provider ...` or a configuration edit made mid-recording applies to the next recording only.
 
-**Privacy.** Audio is kept in memory, never written to disk, logged, or cached, and released when the request ends or the recording is discarded. A recording you send (by stopping it, or by sending one held at the time cap) goes as one upload to the fixed production endpoint of the selected provider, with no redirects, retries, or fallback to the other provider. Neither Deepgram's nor ElevenLabs' standard tier is a zero-retention guarantee, and sent audio cannot be recalled. A recording you discard, or one held at the time cap and not sent, never leaves the machine. The transcript exists only in the composer. Transcription is billed per audio second; after a timeout it is unknown whether the attempt was billed. The recorder runs without either API key in its environment, but it inherits audio variables such as `PULSE_SERVER`, so audio routing is your setting.
+**Privacy.** Audio is kept in memory, never written to disk, logged, or cached, and released when the request ends or the recording is discarded. A recording you send (by stopping it, or by sending one held at the time cap) goes as one upload to the fixed production endpoint of the selected provider, with no redirects, retries, or fallback to the other provider. Neither Deepgram's nor ElevenLabs' standard tier is a zero-retention guarantee, and sent audio cannot be recalled. A recording you discard, or one held at the time cap and not sent, never leaves the machine. The transcript exists only in the composer or in the message you chose to send. Transcription is billed per audio second; after a timeout it is unknown whether the attempt was billed. The recorder runs without either API key in its environment, but it inherits audio variables such as `PULSE_SERVER`, so audio routing is your setting.
 
 ## Provider behavior and limits
 

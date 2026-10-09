@@ -10,18 +10,21 @@ import {
   API_KEY_ENV,
   PROVIDER_HARD_LIMIT_CEILINGS,
   cacheDir,
+  canonicalLocale,
   describeConfig,
   effectiveSpeechProvider,
   loadConfig,
   readApiKey,
   readProviderApiKey,
   type Env,
+  type Shortcuts,
   type SpeakConfig,
   type SpeechProvider,
 } from "./config.ts";
 import { synthesize as synthesizeDeepgram } from "./deepgram.ts";
 import { redact, synthesize as synthesizeElevenLabs } from "./elevenlabs.ts";
 import { fetchQuota } from "./quota.ts";
+import { buildHelp } from "./help.ts";
 import { findRecorder } from "./record.ts";
 import { NORMALIZER_VERSION, checkLength } from "./text.ts";
 import { Translator, type TranslationRegistry } from "./translation.ts";
@@ -50,6 +53,8 @@ type Phase = "preparing" | "translating" | "generating" | "playing";
 interface Job {
   controller: AbortController;
   speechProviderOverride?: SpeechProvider;
+  /** The one-command or session locale, fixed at job start; undefined means the configured one. */
+  locale?: string;
   provider?: SpeechProvider;
   phase: Phase;
   player?: PlayerHandle;
@@ -84,6 +89,7 @@ const ignoreFailure = (work: Promise<unknown>): Promise<void> =>
  */
 export class SpeechController {
   private readonly deps: SpeakDeps;
+  private readonly shortcuts: Shortcuts;
   private readonly translator = new Translator();
   private job: Job | undefined;
   private lastClip: Clip | undefined;
@@ -92,11 +98,13 @@ export class SpeechController {
   private quotaTask: Promise<void> = Promise.resolve();
   private speechProviderOverride: SpeechProvider | undefined;
   private inputProviderOverride: SpeechProvider | undefined;
+  private speechLocaleOverride: string | undefined;
   /** Returns a reason while new audio must not start (the microphone is in use), else undefined. */
   speechBlock: (() => string | undefined) | undefined;
 
-  constructor(deps: SpeakDeps) {
+  constructor(deps: SpeakDeps, shortcuts: Shortcuts) {
     this.deps = deps;
+    this.shortcuts = shortcuts;
   }
 
   /** The session-only voice-input provider, applied over the configured one. */
@@ -119,8 +127,9 @@ export class SpeechController {
     ui: SpeakUi,
     registry: TranslationRegistry | undefined,
     recordFailure?: (record: TranslationFailureRecord) => void,
+    oneCommandLocale?: string,
   ): void {
-    const job = this.begin(ui, recordFailure);
+    const job = this.begin(ui, recordFailure, oneCommandLocale);
     if (job)
       this.task = this.run(job, () =>
         this.generateAndPlay(job, text, true, registry),
@@ -168,7 +177,7 @@ export class SpeechController {
     ui: SpeakUi,
   ): Promise<void> {
     if (name !== undefined && name !== "reset" && name !== "elevenlabs" && name !== "deepgram") {
-      ui.notify(kind === "speech" ? "Usage: /speak provider [elevenlabs|deepgram|reset]" : "Usage: /talk provider [deepgram|elevenlabs|reset]", "info");
+      await this.help(ui);
       return;
     }
     if (name !== undefined) {
@@ -183,6 +192,33 @@ export class SpeechController {
     const override = kind === "speech" ? this.speechProviderOverride : this.inputProviderOverride;
     const configured = kind === "speech" ? loaded.config.provider : loaded.config.input.provider;
     ui.notify(`${kind} provider: ${override ?? configured}${override ? " (session override)" : ""}`, "info");
+  }
+
+  /** `/speak locale [<tag>|reset]`: report, set, or clear the session locale. No request is made. */
+  async locale(arg: string | undefined, ui: SpeakUi): Promise<void> {
+    if (arg !== undefined && arg !== "reset") {
+      const tag = canonicalLocale(arg);
+      if (!tag) {
+        ui.notify(`"${arg.slice(0, 40)}" is not a valid BCP-47 language tag. The speech locale is unchanged.`, "warning");
+        return;
+      }
+      this.speechLocaleOverride = tag;
+    } else if (arg === "reset") {
+      this.speechLocaleOverride = undefined;
+    }
+    const loaded = await loadConfig(this.deps.env, this.deps.readFile, this.deps.home);
+    const override = this.speechLocaleOverride;
+    if (!override && !loaded.ok) {
+      ui.notify(`not configured: ${loaded.problem}`, "warning");
+      return;
+    }
+    const effective = override ?? (loaded.ok ? loaded.config.locale : "");
+    ui.notify(`speech locale: ${effective}${override ? " (session override)" : ""}`, "info");
+  }
+
+  /** The combined `/speak` and `/talk` help; it reads the local configuration only. */
+  async help(ui: SpeakUi): Promise<void> {
+    ui.notify(await buildHelp(this.deps, this.speechLocaleOverride, this.shortcuts), "info");
   }
 
   /** Quota is independent of speech; do not block Pi's stop command while waiting. */
@@ -235,6 +271,7 @@ export class SpeechController {
           {
             speechProvider: this.speechProviderOverride,
             inputProviderOverride: this.inputProviderOverride,
+            speechLocale: this.speechLocaleOverride,
             recordingTool: recordingTool ? recordingTool : "not found",
           },
         ),
@@ -258,6 +295,7 @@ export class SpeechController {
   private begin(
     ui: SpeakUi,
     recordFailure?: (record: TranslationFailureRecord) => void,
+    oneCommandLocale?: string,
   ): Job | undefined {
     const blocked = this.speechBlock?.();
     if (blocked) {
@@ -274,6 +312,7 @@ export class SpeechController {
     const job: Job = {
       controller: new AbortController(),
       speechProviderOverride: this.speechProviderOverride,
+      locale: oneCommandLocale ?? this.speechLocaleOverride,
       phase: "preparing",
       ui,
       recordFailure,
@@ -396,6 +435,7 @@ export class SpeechController {
     const config: SpeakConfig = {
       ...loaded.config,
       provider,
+      locale: job.locale ?? loaded.config.locale,
       hardLimitChars: Math.min(
         loaded.config.hardLimitChars,
         PROVIDER_HARD_LIMIT_CEILINGS[provider],

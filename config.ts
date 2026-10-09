@@ -28,6 +28,12 @@ export interface DeepgramConfig {
   sttModel: string;
 }
 
+/** The two push-to-talk keys as Pi registered them at load. */
+export interface Shortcuts {
+  send: string;
+  transcribe: string;
+}
+
 export interface SpeakConfig {
   provider: SpeechProvider;
   providers: { elevenlabs: ElevenLabsConfig; deepgram: DeepgramConfig };
@@ -36,6 +42,8 @@ export interface SpeakConfig {
     language?: string;
     maxSeconds: number;
     shortcut: string;
+    transcribeShortcut: string;
+    sendWhenBusy: "interrupt" | "wait";
   };
   locale: string;
   translation?: { provider: string; model: string; thinking?: ThinkingLevel };
@@ -58,8 +66,10 @@ const DEFAULTS = {
   elevenLabsSttModel: "scribe_v2",
   deepgramSttModel: "nova-3",
   inputProvider: "deepgram" as const,
-  inputMaxSeconds: 60,
+  inputMaxSeconds: 120,
   inputShortcut: "alt+t",
+  inputTranscribeShortcut: "alt+shift+t",
+  inputSendWhenBusy: "interrupt" as const,
   hardLimitChars: HARD_LIMIT_CEILING,
   requestTimeoutMs: 45_000,
   player: {
@@ -215,6 +225,15 @@ function parseLocale(value: unknown, name = "locale"): string {
   }
 }
 
+/** The canonical form of a BCP-47 tag typed in a command, or undefined when it is malformed. */
+export function canonicalLocale(tag: string): string | undefined {
+  try {
+    return parseLocale(tag);
+  } catch {
+    return undefined;
+  }
+}
+
 function parseTranslation(value: unknown): SpeakConfig["translation"] {
   if (value === undefined) return undefined;
   if (
@@ -339,16 +358,36 @@ function parseInput(value: unknown): SpeakConfig["input"] {
       provider: DEFAULTS.inputProvider,
       maxSeconds: DEFAULTS.inputMaxSeconds,
       shortcut: DEFAULTS.inputShortcut,
+      transcribeShortcut: DEFAULTS.inputTranscribeShortcut,
+      sendWhenBusy: DEFAULTS.inputSendWhenBusy,
     };
   if (!isRecord(value)) fail("input must be an object");
   const unknown = Object.keys(value).filter(
-    (key) => !["provider", "language", "maxSeconds", "shortcut"].includes(key),
+    (key) =>
+      !["provider", "language", "maxSeconds", "shortcut", "transcribeShortcut", "sendWhenBusy"].includes(key),
   );
   if (unknown.length > 0)
     fail(`input contains unknown key(s): ${unknown.join(", ")}`);
   const provider = value.provider ?? DEFAULTS.inputProvider;
   if (provider !== "deepgram" && provider !== "elevenlabs")
     fail('input.provider must be "deepgram" or "elevenlabs"');
+  const sendWhenBusy = value.sendWhenBusy ?? DEFAULTS.inputSendWhenBusy;
+  if (sendWhenBusy !== "interrupt" && sendWhenBusy !== "wait")
+    fail('input.sendWhenBusy must be "interrupt" or "wait"');
+  const shortcut = checkedString(
+    value.shortcut ?? DEFAULTS.inputShortcut,
+    "input.shortcut",
+    /^.{1,100}$/,
+    "input.shortcut must be a non-empty string",
+  );
+  const transcribeShortcut = checkedString(
+    value.transcribeShortcut ?? DEFAULTS.inputTranscribeShortcut,
+    "input.transcribeShortcut",
+    /^.{1,100}$/,
+    "input.transcribeShortcut must be a non-empty string",
+  );
+  if (shortcut.toLowerCase() === transcribeShortcut.toLowerCase())
+    fail("input.shortcut and input.transcribeShortcut must be different keys");
   return {
     provider,
     language:
@@ -361,12 +400,9 @@ function parseInput(value: unknown): SpeakConfig["input"] {
       1,
       300,
     ),
-    shortcut: checkedString(
-      value.shortcut ?? DEFAULTS.inputShortcut,
-      "input.shortcut",
-      /^.{1,100}$/,
-      "input.shortcut must be a non-empty string",
-    ),
+    shortcut,
+    transcribeShortcut,
+    sendWhenBusy,
   };
 }
 
@@ -420,7 +456,7 @@ export function parseConfig(raw: unknown): ConfigResult {
   }
 }
 
-/** Reads and validates the configuration on demand, and once at load for `input.shortcut`. */
+/** Reads and validates the configuration on demand, and once at load for the two shortcuts. */
 export async function loadConfig(
   env: Env,
   read: (path: string) => Promise<string> = (path) => readFile(path, "utf8"),
@@ -468,6 +504,7 @@ export function describeConfig(
   options: {
     speechProvider?: SpeechProvider;
     inputProviderOverride?: SpeechProvider;
+    speechLocale?: string;
     recordingTool?: string;
   } = {},
 ): string[] {
@@ -502,7 +539,7 @@ export function describeConfig(
     `${API_KEY_ENV}: ${keys.elevenlabs ? "present" : "missing"}`,
     `${DEEPGRAM_API_KEY_ENV}: ${keys.deepgram ? "present" : "missing"}`,
     `recording tool: ${options.recordingTool ?? "not found"}`,
-    `locale: ${config.locale}`,
+    `locale: ${options.speechLocale ?? config.locale}${options.speechLocale ? " (session override)" : ""}`,
     `translation: ${config.translation ? `${config.translation.provider}/${config.translation.model} (thinking: ${config.translation.thinking ?? "host default"})` : "not configured"}`,
     `cache: ${config.cache.ttlDays} days, ${config.cache.maxBytes} bytes`,
   ];

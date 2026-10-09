@@ -3,32 +3,14 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
-import { loadConfig } from "./config.ts";
+import { canonicalLocale, loadConfig, type Shortcuts } from "./config.ts";
 import { SELECTION_MESSAGES, selectSessionAnswer } from "./session.ts";
 import { SpeechController, type SpeakDeps } from "./speech-job.ts";
 import { TalkController } from "./talk.ts";
 import { normalizeExplicitText, prepareAnswerText } from "./text.ts";
 import type { TranslationFailureRecord } from "./translation-failure.ts";
 
-export const SPEAK_USAGE = [
-  "Usage:",
-  "  /speak                 speak the latest answer in the configured locale (default vi)",
-  "  /speak original        speak the latest answer without translation",
-  "  /speak text <text>     speak the supplied text",
-  "  /speak stop            stop speech started by this extension",
-  "  /speak replay          replay the last clip without regenerating it",
-  "  /speak status          show configuration and state",
-  "  /speak quota           show ElevenLabs account quota and billing figures",
-  "  /speak provider [elevenlabs|deepgram|reset]  select speech provider for this session",
-].join("\n");
-
-export const TALK_USAGE = [
-  "Usage:",
-  "  /talk                  start recording; run it again, or press the shortcut, to stop and transcribe",
-  "  /talk provider [deepgram|elevenlabs|reset]  select the voice input provider for this session",
-].join("\n");
-
-const DEFAULT_SHORTCUT = "alt+t";
+const DEFAULT_SHORTCUTS: Shortcuts = { send: "alt+t", transcribe: "alt+shift+t" };
 
 const NOT_AVAILABLE = (name: string) =>
   `/speak ${name} is not available in this version.`;
@@ -41,26 +23,43 @@ async function handleSpeak(
 ): Promise<void> {
   const ui = ctx.ui;
   const trimmed = args.trim();
-  const word = (trimmed.split(/\s+/)[0] ?? "").toLowerCase();
+  const parts = trimmed.split(/\s+/);
+  const word = (parts[0] ?? "").toLowerCase();
 
+  if (word === "help" || word === "?") return controller.help(ui);
   if (word === "stop") return controller.stop(ui);
   if (word === "status") return controller.status(ui);
   if (word === "quota") return controller.quota(ui);
   if (word === "provider") {
-    const name = trimmed.split(/\s+/)[1] as "elevenlabs" | "deepgram" | "reset" | undefined;
-    if (trimmed.split(/\s+/).length > 2)
-      return ui.notify(SPEAK_USAGE, "info");
+    const name = parts[1] as "elevenlabs" | "deepgram" | "reset" | undefined;
+    if (parts.length > 2) return controller.help(ui);
     return controller.provider("speech", name, ui);
+  }
+  if (word === "locale") {
+    if (parts.length > 2) return controller.help(ui);
+    return controller.locale(parts[1], ui);
   }
   if (word === "summary" || word === "cache-clear")
     return ui.notify(NOT_AVAILABLE(word), "info");
   if (
     word !== "" &&
     word !== "original" &&
+    word !== "in" &&
     word !== "text" &&
     word !== "replay"
   )
-    return ui.notify(SPEAK_USAGE, "info");
+    return controller.help(ui);
+
+  let oneCommandLocale: string | undefined;
+  if (word === "in") {
+    if (parts.length !== 2) return controller.help(ui);
+    oneCommandLocale = canonicalLocale(parts[1]!);
+    if (!oneCommandLocale)
+      return ui.notify(
+        `"${parts[1]!.slice(0, 40)}" is not a valid BCP-47 language tag. Nothing was translated or spoken.`,
+        "warning",
+      );
+  }
 
   if (ctx.mode !== "tui") {
     ui.notify(
@@ -74,11 +73,11 @@ async function handleSpeak(
 
   if (word === "text") {
     const text = normalizeExplicitText(trimmed.slice("text".length));
-    if (text === "") return ui.notify(SPEAK_USAGE, "info");
+    if (text === "") return controller.help(ui);
     return controller.speak(text, ui);
   }
 
-  speakLatestAnswer(ctx, controller, word === "original", recordFailure);
+  speakLatestAnswer(ctx, controller, word === "original", recordFailure, oneCommandLocale);
 }
 
 function speakLatestAnswer(
@@ -86,6 +85,7 @@ function speakLatestAnswer(
   controller: SpeechController,
   original: boolean,
   recordFailure: (record: TranslationFailureRecord) => void,
+  locale: string | undefined,
 ): void {
   const ui = ctx.ui;
   if (!ctx.isIdle() || ctx.hasPendingMessages()) {
@@ -106,18 +106,19 @@ function speakLatestAnswer(
     );
   if (original) controller.speak(prepared, ui);
   else
-    controller.speakLocalized(prepared, ui, ctx.modelRegistry, recordFailure);
+    controller.speakLocalized(prepared, ui, ctx.modelRegistry, recordFailure, locale);
 }
 
 /**
- * Registers `/speak`, `/talk`, the push-to-talk shortcut, and four lifecycle handlers that can
- * only cancel this extension's own work. Nothing is read, spawned, or sent at registration.
+ * Registers `/speak`, `/talk`, the two push-to-talk shortcuts, four lifecycle handlers that can
+ * only cancel this extension's own work, and three compaction handlers that only note whether Pi is
+ * compacting. Nothing is read, spawned, or sent at registration.
  */
 export function registerSpeak(
   pi: ExtensionAPI,
   controller: SpeechController,
   talk: TalkController,
-  shortcut: string = DEFAULT_SHORTCUT,
+  shortcuts: Shortcuts = DEFAULT_SHORTCUTS,
 ): void {
   pi.registerCommand("speak", {
     description: "Speak a Pi answer or supplied text (explicit request only)",
@@ -127,21 +128,27 @@ export function registerSpeak(
       ),
   });
   pi.registerCommand("talk", {
-    description: "Dictate into the composer by push-to-talk, or select the voice input provider",
+    description: "Dictate into the composer by push-to-talk (`send` also sends it), or select the voice input provider",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/).filter(Boolean);
-      if (parts.length === 0) return talk.press(ctx);
-      if (parts.length > 2 || parts[0] !== "provider")
-        return ctx.ui.notify(TALK_USAGE, "info");
+      if (parts.length === 0) return talk.press(ctx, "transcribe");
+      if (parts.length === 1 && parts[0] === "send") return talk.press(ctx, "send");
+      if (parts.length === 1 && (parts[0] === "help" || parts[0] === "?"))
+        return controller.help(ctx.ui);
+      if (parts.length > 2 || parts[0] !== "provider") return controller.help(ctx.ui);
       const name = parts[1] as "deepgram" | "elevenlabs" | "reset" | undefined;
       if (name !== undefined && !["deepgram", "elevenlabs", "reset"].includes(name))
-        return ctx.ui.notify(TALK_USAGE, "info");
+        return controller.help(ctx.ui);
       await controller.provider("input", name, ctx.ui);
     },
   });
-  pi.registerShortcut(shortcut as KeyId, {
-    description: "Start or stop push-to-talk voice input",
-    handler: (ctx) => talk.press(ctx),
+  pi.registerShortcut(shortcuts.send as KeyId, {
+    description: "Start or stop push-to-talk voice input; stopping sends the transcribed message",
+    handler: (ctx) => talk.press(ctx, "send"),
+  });
+  pi.registerShortcut(shortcuts.transcribe as KeyId, {
+    description: "Start or stop push-to-talk voice input; stopping only adds the text to the composer",
+    handler: (ctx) => talk.press(ctx, "transcribe"),
   });
 
   const reset = () => {
@@ -152,11 +159,21 @@ export function registerSpeak(
   pi.on("session_before_switch", reset);
   pi.on("session_before_fork", reset);
   pi.on("session_tree", reset);
+  // These only record the state; none returns a result, so compaction is never cancelled or changed.
+  pi.on("session_before_compact", () => {
+    talk.setCompacting(true);
+  });
+  pi.on("session_compact", () => {
+    talk.setCompacting(false);
+  });
+  pi.on("session_compact_failed", () => {
+    talk.setCompacting(false);
+  });
 }
 
 /**
- * Speech and recording happen only when the user runs `/speak`, `/talk`, or the shortcut. Loading
- * reads the configuration file once, for the shortcut, and does nothing else.
+ * Speech and recording happen only when the user runs `/speak`, `/talk`, or a shortcut. Loading
+ * reads the configuration file once, for the two shortcuts, and does nothing else.
  */
 export default async function speak(
   pi: ExtensionAPI,
@@ -168,13 +185,24 @@ export default async function speak(
     now: Date.now,
     ...overrides,
   };
-  // If the file cannot be read now, the default key is registered and the problem shows on first use.
+  // If the file cannot be read now, the default keys are registered and the problem shows on first use.
   const loaded = await loadConfig(deps.env, deps.readFile, deps.home);
-  const controller = new SpeechController(deps);
+  const shortcuts = loaded.ok
+    ? {
+        send: loaded.config.input.shortcut,
+        transcribe: loaded.config.input.transcribeShortcut,
+      }
+    : DEFAULT_SHORTCUTS;
+  const controller = new SpeechController(deps, shortcuts);
   registerSpeak(
     pi,
     controller,
-    new TalkController(deps, controller),
-    loaded.ok ? loaded.config.input.shortcut : DEFAULT_SHORTCUT,
+    new TalkController(
+      deps,
+      controller,
+      (text, options) => pi.sendUserMessage(text, options),
+      shortcuts,
+    ),
+    shortcuts,
   );
 }
