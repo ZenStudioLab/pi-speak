@@ -489,7 +489,7 @@ export function parseConfig(raw: unknown): ConfigResult {
   }
 }
 
-/** Reads and validates the configuration on demand, and once at load for the two shortcuts. */
+/** Reads and validates the configuration on demand, and once at load for the shortcuts. */
 export async function loadConfig(
   env: Env,
   read: (path: string) => Promise<string> = (path) => readFile(path, "utf8"),

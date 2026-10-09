@@ -39,7 +39,7 @@ const formatElapsed = (ms: number): string => {
 
 /**
  * Owns the single recording or transcription of this Pi process. Nothing here runs until the
- * user presses the shortcut or runs `/talk`; every continuation re-checks that its recording is
+ * user presses a push-to-talk shortcut or runs `/talk`; every continuation re-checks that its recording is
  * still the active one, so a discarded or replaced recording can never send audio or change the
  * composer.
  */
