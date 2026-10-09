@@ -44,6 +44,8 @@ export interface SpeakConfig {
     shortcut: string;
     transcribeShortcut: string;
     sendWhenBusy: "interrupt" | "wait";
+    stopOnPhrase: boolean;
+    stopPhrases: string[];
   };
   locale: string;
   translation?: { provider: string; model: string; thinking?: ThinkingLevel };
@@ -70,6 +72,8 @@ const DEFAULTS = {
   inputShortcut: "alt+t",
   inputTranscribeShortcut: "alt+shift+t",
   inputSendWhenBusy: "interrupt" as const,
+  inputStopOnPhrase: false,
+  inputStopPhrases: ["let's go"],
   hardLimitChars: HARD_LIMIT_CEILING,
   requestTimeoutMs: 45_000,
   player: {
@@ -352,6 +356,17 @@ function parseProviders(value: unknown): SpeakConfig["providers"] {
   };
 }
 
+function parseStopPhrases(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 10)
+    fail("input.stopPhrases must be a list of 1 to 10 phrases");
+  return value.map((phrase) => {
+    const trimmed = typeof phrase === "string" ? phrase.trim() : "";
+    if (trimmed.length < 1 || trimmed.length > 40)
+      fail("input.stopPhrases entries must be strings of 1 to 40 characters");
+    return trimmed;
+  });
+}
+
 function parseInput(value: unknown): SpeakConfig["input"] {
   if (value === undefined)
     return {
@@ -360,11 +375,13 @@ function parseInput(value: unknown): SpeakConfig["input"] {
       shortcut: DEFAULTS.inputShortcut,
       transcribeShortcut: DEFAULTS.inputTranscribeShortcut,
       sendWhenBusy: DEFAULTS.inputSendWhenBusy,
+      stopOnPhrase: DEFAULTS.inputStopOnPhrase,
+      stopPhrases: [...DEFAULTS.inputStopPhrases],
     };
   if (!isRecord(value)) fail("input must be an object");
   const unknown = Object.keys(value).filter(
     (key) =>
-      !["provider", "language", "maxSeconds", "shortcut", "transcribeShortcut", "sendWhenBusy"].includes(key),
+      !["provider", "language", "maxSeconds", "shortcut", "transcribeShortcut", "sendWhenBusy", "stopOnPhrase", "stopPhrases"].includes(key),
   );
   if (unknown.length > 0)
     fail(`input contains unknown key(s): ${unknown.join(", ")}`);
@@ -374,6 +391,8 @@ function parseInput(value: unknown): SpeakConfig["input"] {
   const sendWhenBusy = value.sendWhenBusy ?? DEFAULTS.inputSendWhenBusy;
   if (sendWhenBusy !== "interrupt" && sendWhenBusy !== "wait")
     fail('input.sendWhenBusy must be "interrupt" or "wait"');
+  const stopOnPhrase = value.stopOnPhrase ?? DEFAULTS.inputStopOnPhrase;
+  if (typeof stopOnPhrase !== "boolean") fail("input.stopOnPhrase must be true or false");
   const shortcut = checkedString(
     value.shortcut ?? DEFAULTS.inputShortcut,
     "input.shortcut",
@@ -403,6 +422,8 @@ function parseInput(value: unknown): SpeakConfig["input"] {
     shortcut,
     transcribeShortcut,
     sendWhenBusy,
+    stopOnPhrase,
+    stopPhrases: parseStopPhrases(value.stopPhrases ?? DEFAULTS.inputStopPhrases),
   };
 }
 
@@ -536,6 +557,7 @@ export function describeConfig(
     `input provider: ${inputProvider}${options.inputProviderOverride ? " (session override)" : ""}`,
     `input model: ${inputProvider === "elevenlabs" ? config.providers.elevenlabs.sttModel : config.providers.deepgram.sttModel}`,
     `input language: ${config.input.language ?? "auto-detect"}`,
+    `stop phrase: ${config.input.stopOnPhrase ? "on (audio streams to ElevenLabs while recording)" : "off"}; phrases: ${config.input.stopPhrases.map((phrase) => `"${phrase}"`).join(", ")}`,
     `${API_KEY_ENV}: ${keys.elevenlabs ? "present" : "missing"}`,
     `${DEEPGRAM_API_KEY_ENV}: ${keys.deepgram ? "present" : "missing"}`,
     `recording tool: ${options.recordingTool ?? "not found"}`,

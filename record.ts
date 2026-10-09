@@ -28,7 +28,7 @@ import {
 } from "./audio.ts";
 import type { Env } from "./config.ts";
 
-const SAMPLE_RATE = 16_000;
+export const SAMPLE_RATE = 16_000;
 export const BYTES_PER_SECOND = SAMPLE_RATE * 2;
 export const LEVEL_STEPS = 8;
 const WAV_HEADER_BYTES = 44;
@@ -121,6 +121,10 @@ export async function startRecorder(options: {
   spawnFn?: SpawnFn;
   /** Called with the level of each chunk kept. */
   onLevel?: (level: number) => void;
+  /** Called with each chunk kept, such as to stream it while recording. */
+  onChunk?: (chunk: Buffer) => void;
+  /** Called once when the length cap stops the recorder, before the recorder has exited. */
+  onCapped?: () => void;
   /** How long a recorder may ignore SIGINT before it is killed outright. */
   killGraceMs?: number;
 }): Promise<StartRecorderResult> {
@@ -186,9 +190,11 @@ export async function startRecorder(options: {
     chunks.push(kept);
     total += kept.length;
     options.onLevel?.(inputLevel(kept));
+    options.onChunk?.(kept);
     if (total >= capBytes && !stopRequested) {
       capped = true;
       stop();
+      options.onCapped?.();
     }
   });
 

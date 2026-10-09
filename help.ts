@@ -15,6 +15,11 @@ export async function buildHelp(
   let locale: string;
   if (sessionLocale) locale = `${sessionLocale} (session override)`;
   else locale = loaded.ok ? `${loaded.config.locale} (configured)` : "unknown";
+  let stopPhrase = "unknown";
+  if (loaded.ok) {
+    const { stopOnPhrase, stopPhrases } = loaded.config.input;
+    stopPhrase = `${stopOnPhrase ? "on" : "off"} (${stopPhrases.map((phrase) => `"${phrase}"`).join(", ")})`;
+  }
   const lines = [
     "Speak and voice input",
     "",
@@ -39,6 +44,8 @@ export async function buildHelp(
     "Either key or command starts a recording; the one that stops it decides whether the message is sent.",
     "Escape: while a recording is starting it cancels the attempt; while recording or held at the time cap it discards the audio. Nothing is sent.",
     `Speech locale: ${locale}`,
+    `Stop phrase: ${stopPhrase}`,
+    "Stop phrase (input.stopOnPhrase, ElevenLabs only): say a phrase from input.stopPhrases as the last words before a pause of about 1 second to stop and send. While on, audio streams to ElevenLabs as you speak; Escape sends nothing but cannot recall audio already sent. A key or /talk still stops the recording and decides whether the text is sent.",
   ];
   if (!loaded.ok)
     lines.push(

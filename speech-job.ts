@@ -26,6 +26,7 @@ import { redact, synthesize as synthesizeElevenLabs } from "./elevenlabs.ts";
 import { fetchQuota } from "./quota.ts";
 import { buildHelp } from "./help.ts";
 import { findRecorder } from "./record.ts";
+import type { WebSocketFn } from "./realtime.ts";
 import { NORMALIZER_VERSION, checkLength } from "./text.ts";
 import { Translator, type TranslationRegistry } from "./translation.ts";
 import {
@@ -46,6 +47,8 @@ export interface SpeakDeps {
   now: () => number;
   home?: string;
   readFile?: (path: string) => Promise<string>;
+  /** Opens the live transcription socket; Node's global `WebSocket` when omitted. */
+  webSocketFn?: WebSocketFn;
 }
 
 type Phase = "preparing" | "translating" | "generating" | "playing";

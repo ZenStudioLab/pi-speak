@@ -1,4 +1,3 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import {
   API_KEY_ENV,
@@ -6,60 +5,31 @@ import {
   loadConfig,
   readProviderApiKey,
   type Shortcuts,
-  type SpeechProvider,
 } from "./config.ts";
 import { transcribe as transcribeDeepgram } from "./deepgram.ts";
 import { redact, transcribe as transcribeElevenLabs } from "./elevenlabs.ts";
 import {
-  startRecorder,
-  wavFromPcm,
-  type RecorderExit,
-  type RecorderHandle,
-} from "./record.ts";
+  matchStopPhrase,
+  nodeWebSocket,
+  openRealtime,
+  type RealtimeSession,
+} from "./realtime.ts";
+import { startRecorder, wavFromPcm, type RecorderExit } from "./record.ts";
 import type { SpeakDeps, SpeechController } from "./speech-job.ts";
+import type {
+  Recording,
+  SendMessage,
+  Starting,
+  TalkContext,
+  TalkMode,
+  TalkUi,
+} from "./talk-state.ts";
 
-/** Push-to-talk needs only the run mode, the UI, and the idle state and model of the context that pressed the key. */
-export type TalkContext = Pick<ExtensionContext, "mode" | "ui" | "isIdle" | "model">;
-type TalkUi = TalkContext["ui"];
-
-/** What the control that stops a recording asks for: send the composer, or only add the text to it. */
-export type TalkMode = "send" | "transcribe";
-
-/** `pi.sendUserMessage`; always plain text, delivered to a running turn only with `deliverAs`. */
-export type SendMessage = (
-  text: string,
-  options: { deliverAs?: "steer" | "followUp"; expandPromptTemplates: false },
-) => void;
+export type { SendMessage, TalkContext, TalkMode } from "./talk-state.ts";
 
 const STATUS_KEY = "speak-talk";
 const MIN_RECORDING_MS = 500;
 const LEVEL_BARS = "▁▂▃▄▅▆▇█";
-
-/** Placeholder for a press that is still checking configuration or starting the recorder. */
-interface Starting {
-  phase: "starting";
-}
-
-/** One recording and what it needs afterwards; its provider settings are fixed when it starts. */
-interface Recording {
-  phase: "recording" | "held" | "transcribing";
-  ui: TalkUi;
-  handle: RecorderHandle;
-  provider: SpeechProvider;
-  model: string;
-  language: string | undefined;
-  apiKey: string;
-  timeoutMs: number;
-  maxSeconds: number;
-  startedAt: number;
-  level: number;
-  /** Audio held at the time cap; never sent until the user presses again. */
-  pcm: Buffer | undefined;
-  /** Set by the stopping control, which alone decides whether the transcript is sent. */
-  delivery: { mode: TalkMode; context: Pick<TalkContext, "isIdle" | "model"> } | undefined;
-  unsubscribeInput: (() => void) | undefined;
-  cancel: AbortController;
-}
 
 const formatElapsed = (ms: number): string => {
   const seconds = Math.floor(ms / 1000);
@@ -110,7 +80,7 @@ export class TalkController {
       return;
     }
     const active = this.active;
-    if (!active) return this.start(ui);
+    if (!active) return this.start(ctx);
     if (active.phase === "starting") {
       this.cancelStarting(active, ui);
     } else if (active.phase === "transcribing") {
@@ -120,7 +90,12 @@ export class TalkController {
       );
     } else if (active.phase === "held") {
       active.delivery = { mode, context: ctx };
-      this.upload(active, active.pcm!);
+      // Held at the cap but not yet exited: transcribe once the recorder has exited.
+      if (!active.live && active.pcm) this.upload(active, active.pcm);
+      else {
+        this.beginTranscribing(active);
+        if (active.live?.text !== undefined) this.deliverStreamed(active);
+      }
     } else if (this.deps.now() - active.startedAt < MIN_RECORDING_MS) {
       this.release(active);
       ui.notify(
@@ -128,11 +103,8 @@ export class TalkController {
         "info",
       );
     } else {
-      active.phase = "transcribing";
       active.delivery = { mode, context: ctx };
-      active.unsubscribeInput?.();
-      active.unsubscribeInput = undefined;
-      this.render(active);
+      this.beginTranscribing(active);
       active.handle.stop();
     }
   }
@@ -146,11 +118,13 @@ export class TalkController {
   resetSession(): void {
     const active = this.active;
     this.active = undefined;
-    if (active && active.phase !== "starting") this.release(active);
+    if (active?.phase === "starting") active.cancel.abort();
+    else if (active) this.release(active);
   }
 
-  private async start(ui: TalkUi): Promise<void> {
-    const claim: Starting = { phase: "starting" };
+  private async start(ctx: Pick<TalkContext, "ui" | "isIdle" | "model">): Promise<void> {
+    const ui = ctx.ui;
+    const claim: Starting = { phase: "starting", cancel: new AbortController() };
     this.active = claim;
     // Escape cancels an attempt that is not recording yet, so it never reaches the editor.
     const unsubscribeStarting = ui.onTerminalInput((data) => {
@@ -159,7 +133,7 @@ export class TalkController {
       return { consume: true };
     });
     try {
-      await this.begin(ui, claim);
+      await this.begin(ctx, claim);
     } finally {
       unsubscribeStarting();
     }
@@ -168,11 +142,16 @@ export class TalkController {
   /** Clearing the claim makes every `this.active !== claim` check in `begin` end the attempt. */
   private cancelStarting(claim: Starting, ui: TalkUi): void {
     if (this.active === claim) this.active = undefined;
+    claim.cancel.abort();
     this.clearStatus(ui);
     ui.notify("Recording cancelled. Nothing was recorded or sent.", "info");
   }
 
-  private async begin(ui: TalkUi, claim: Starting): Promise<void> {
+  private async begin(
+    ctx: Pick<TalkContext, "ui" | "isIdle" | "model">,
+    claim: Starting,
+  ): Promise<void> {
+    const ui = ctx.ui;
     const abandon = (message: string) => {
       if (this.active === claim) this.active = undefined;
       ui.notify(message, "warning");
@@ -187,6 +166,10 @@ export class TalkController {
       return abandon(`Voice input is not configured: ${loaded.problem}`);
     const { input, providers, requestTimeoutMs } = loaded.config;
     const provider = this.speech.inputOverride ?? input.provider;
+    if (input.stopOnPhrase && provider !== "elevenlabs")
+      return abandon(
+        "The stop phrase needs ElevenLabs, but the voice input provider is Deepgram. Nothing was recorded or sent. Run /talk provider elevenlabs, or turn off input.stopOnPhrase.",
+      );
     const apiKey = readProviderApiKey(this.deps.env, provider);
     if (!apiKey)
       return abandon(
@@ -196,11 +179,35 @@ export class TalkController {
     // The microphone must not hear this extension's own speech.
     await this.speech.stopOwnAudio();
     if (this.active !== claim) return;
+    // The recorder starts only once the connection is open, so no audio is lost while waiting for it.
+    let session: RealtimeSession | undefined;
+    if (input.stopOnPhrase) {
+      const opened = await openRealtime({
+        apiKey,
+        language: input.language,
+        timeoutMs: requestTimeoutMs,
+        signal: claim.cancel.signal,
+        webSocketFn: this.deps.webSocketFn ?? nodeWebSocket,
+      });
+      if (this.active !== claim) {
+        if (opened.ok) opened.session.close();
+        return;
+      }
+      if (!opened.ok)
+        return abandon(`${this.redactKeys(opened.failure.message)} Nothing was recorded or sent.`);
+      session = opened.session;
+    }
     let recording: Recording | undefined;
     const started = await startRecorder({
       env: this.deps.env,
       maxSeconds: input.maxSeconds,
       spawnFn: this.deps.spawnFn,
+      onChunk: (chunk) => session?.sendAudio(chunk),
+      // The cap holds the recording at once, not when the recorder exits, so a late phrase cannot send it.
+      onCapped: () => {
+        if (recording && this.active === recording && recording.phase === "recording")
+          recording.phase = "held";
+      },
       onLevel: (level) => {
         if (!recording || this.active !== recording || recording.phase !== "recording")
           return;
@@ -210,12 +217,15 @@ export class TalkController {
     });
     if (this.active !== claim) {
       if (started.ok) started.handle.stop();
+      session?.close();
       return;
     }
-    if (!started.ok)
+    if (!started.ok) {
+      session?.close();
       return abandon(
         `No recording tool was found (looked for ${started.tried.join(", ")}). Nothing was recorded.`,
       );
+    }
 
     const current: Recording = {
       phase: "recording",
@@ -230,6 +240,7 @@ export class TalkController {
       startedAt: this.deps.now(),
       level: 0,
       pcm: undefined,
+      live: session && { session, phrases: input.stopPhrases, context: ctx, text: undefined },
       delivery: undefined,
       unsubscribeInput: undefined,
       cancel: new AbortController(),
@@ -243,6 +254,12 @@ export class TalkController {
       ui.notify("Recording discarded. Nothing was sent.", "info");
       return { consume: true };
     });
+    session?.listen({
+      onCommitted: () => this.onCommitted(current),
+      onFailure: (failure) => {
+        if (this.active === current) this.failStream(current, failure.message);
+      },
+    });
     this.render(current);
     void started.handle.done.then((exit) => this.onRecorderExit(current, exit));
   }
@@ -250,11 +267,17 @@ export class TalkController {
   private onRecorderExit(rec: Recording, exit: RecorderExit): void {
     if (this.active !== rec) return;
     if (exit.kind === "failed") {
+      if (rec.live) return this.failStream(rec, `Recording failed: ${exit.detail}.`);
       this.release(rec);
       rec.ui.notify(
         `Recording failed: ${this.redactKeys(exit.detail)}. Nothing was sent.`,
         "error",
       );
+    } else if (rec.live) {
+      if (rec.live.text !== undefined) return;
+      if (rec.phase === "recording") rec.phase = "held";
+      if (rec.phase === "held") this.render(rec);
+      this.finishStream(rec);
     } else if (rec.phase === "transcribing") {
       this.upload(rec, exit.pcm);
     } else {
@@ -264,12 +287,67 @@ export class TalkController {
     }
   }
 
-  private upload(rec: Recording, pcm: Buffer): void {
+  /** Moves to transcription, where Escape no longer discards. */
+  private beginTranscribing(rec: Recording): void {
     rec.phase = "transcribing";
-    rec.pcm = undefined;
     rec.unsubscribeInput?.();
     rec.unsubscribeInput = undefined;
     this.render(rec);
+  }
+
+  /** The recorder has stopped (key or time cap): requests the final commit and keeps its text. */
+  private finishStream(rec: Recording): void {
+    const live = rec.live!;
+    void live.session.finish(rec.timeoutMs).then((result) => {
+      if (this.active !== rec) return;
+      if (!result.ok) return this.failStream(rec, result.failure.message);
+      live.session.close();
+      live.text = result.text;
+      if (rec.delivery) this.deliverStreamed(rec);
+    });
+  }
+
+  /** A committed segment arrived: a stop phrase at its end stops the recording and sends the rest. */
+  private onCommitted(rec: Recording): void {
+    const live = rec.live!;
+    if (this.active !== rec || rec.phase !== "recording") return;
+    const rest = matchStopPhrase(live.session.text, live.phrases);
+    if (rest === undefined) return;
+    live.text = rest;
+    live.session.close();
+    rec.delivery = { mode: "send", context: live.context };
+    this.beginTranscribing(rec);
+    rec.handle.stop();
+    this.deliverStreamed(rec, "Only the stop phrase was heard. Nothing was sent and the composer is unchanged.");
+  }
+
+  private deliverStreamed(
+    rec: Recording,
+    nothing = "Nothing was recognized. The composer is unchanged.",
+  ): void {
+    const text = rec.live!.text!;
+    if (text !== "") {
+      void this.deliver(rec, text);
+      return;
+    }
+    this.release(rec);
+    rec.ui.notify(nothing, "info");
+  }
+
+  /** A failed stream or recorder ends the recording; the text already committed is added to the composer, unsent. */
+  private failStream(rec: Recording, message: string): void {
+    const text = rec.live!.session.text;
+    this.release(rec);
+    if (text !== "") this.append(rec.ui, text);
+    rec.ui.notify(
+      `${this.redactKeys(message)} Nothing was sent.${text !== "" ? " The text transcribed so far was added to the composer." : ""}`,
+      "error",
+    );
+  }
+
+  private upload(rec: Recording, pcm: Buffer): void {
+    rec.pcm = undefined;
+    this.beginTranscribing(rec);
     const request = {
       wav: wavFromPcm(pcm),
       model: rec.model,
@@ -364,6 +442,7 @@ export class TalkController {
     rec.unsubscribeInput?.();
     rec.unsubscribeInput = undefined;
     rec.handle.stop();
+    rec.live?.session.close();
     rec.cancel.abort();
     rec.pcm = undefined;
     this.clearStatus(rec.ui);

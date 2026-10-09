@@ -41,7 +41,9 @@ This extension is local to this repository. It is loaded explicitly with `pi -e`
        "maxSeconds": 120,
        "shortcut": "alt+t",
        "transcribeShortcut": "alt+shift+t",
-       "sendWhenBusy": "interrupt"
+       "sendWhenBusy": "interrupt",
+       "stopOnPhrase": false,
+       "stopPhrases": ["let's go"]
      },
      "locale": "vi",
      "translation": {
@@ -61,7 +63,7 @@ This extension is local to this repository. It is loaded explicitly with `pi -e`
 
    **What is required.** Only the selected provider's voice settings are needed: `providers.elevenlabs.voiceId` and `modelId`, or `providers.deepgram.voice` (an Aura voice whose last segment is its language, such as `aura-2-thalia-en`). Everything else has a default, and `translation` is unconfigured by default.
 
-   **Defaults.** `provider` is `elevenlabs`. The ElevenLabs `outputFormat` is `mp3_44100_128`, `voiceRevision` is `1`, and `sttModel` is `scribe_v2`; the Deepgram `sttModel` is `nova-3`. `input.provider` is `deepgram`, `input.maxSeconds` is `120` (range 1–300), `input.shortcut` (the key that sends) is `alt+t`, `input.transcribeShortcut` (the key that only transcribes) is `alt+shift+t`, `input.sendWhenBusy` is `interrupt` (or `wait`), and `input.language` is unset, so the provider detects the language. The two shortcuts must differ. `locale` is `vi`, `hardLimitChars` is `10000` (it may lower, never raise, a provider's limit), `requestTimeoutMs` is `45000`, and the player and cache are as shown. Unknown keys are rejected, so a pasted secret is refused rather than stored.
+   **Defaults.** `provider` is `elevenlabs`. The ElevenLabs `outputFormat` is `mp3_44100_128`, `voiceRevision` is `1`, and `sttModel` is `scribe_v2`; the Deepgram `sttModel` is `nova-3`. `input.provider` is `deepgram`, `input.maxSeconds` is `120` (range 1–300), `input.shortcut` (the key that sends) is `alt+t`, `input.transcribeShortcut` (the key that only transcribes) is `alt+shift+t`, `input.sendWhenBusy` is `interrupt` (or `wait`), `input.stopOnPhrase` is `false` and `input.stopPhrases` is `["let's go"]` (see [Spoken stop phrase](#spoken-stop-phrase)), and `input.language` is unset, so the provider detects the language. The two shortcuts must differ. `locale` is `vi`, `hardLimitChars` is `10000` (it may lower, never raise, a provider's limit), `requestTimeoutMs` is `45000`, and the player and cache are as shown. Unknown keys are rejected, so a pasted secret is refused rather than stored.
 
    **Voice revision.** Raise `providers.elevenlabs.voiceRevision` whenever you change or re-clone the voice behind the same ID, so older cached clips are not reused.
 
@@ -131,11 +133,37 @@ Dictate a prompt: press a shortcut, speak, press a shortcut again. **The key tha
 
 While recording, a status line shows the elapsed time, a coarse input level, and both stop keys (which one sends); a flat level means the microphone may be muted or the wrong input. At `input.maxSeconds` the recorder stops and the audio is **held, unsent**: the status line names the send, transcribe-only, and discard keys, and nothing leaves the machine until you press one of the first two. Session switching, forking, tree navigation, reload, and shutdown also discard a recording or held audio. While a recording is starting, in progress, or held, `/speak` refuses to start new audio. Only `Esc` is intercepted, and only in those states; every other key, including Enter, reaches the editor as usual.
 
-**What sending does.** The transcript is appended to the composer, and then the whole composer is sent as plain text: a slash command, prompt template, or skill command in it is **not** run, it is sent as words. If no model is selected, or Pi is compacting the conversation, nothing is sent: your draft and the transcript stay in the composer and a message says why (during compaction, press Enter to queue the message). The composer is cleared only after Pi accepts the send call; if the call itself fails, the text stays and the error is shown. A refusal Pi reports only after accepting the call, such as missing model credentials, is shown by Pi as an error after the composer was cleared. An empty or dropped transcript sends nothing. When the agent is already working, `input.sendWhenBusy` decides: `interrupt` (default) delivers the message to the running turn at once, `wait` queues it until the turn ends. The setting is read when the message is sent. There are no spoken commands, no open microphone, and no automatic send at the time cap.
+**What sending does.** The transcript is appended to the composer, and then the whole composer is sent as plain text: a slash command, prompt template, or skill command in it is **not** run, it is sent as words. If no model is selected, or Pi is compacting the conversation, nothing is sent: your draft and the transcript stay in the composer and a message says why (during compaction, press Enter to queue the message). The composer is cleared only after Pi accepts the send call; if the call itself fails, the text stays and the error is shown. A refusal Pi reports only after accepting the call, such as missing model credentials, is shown by Pi as an error after the composer was cleared. An empty or dropped transcript sends nothing. When the agent is already working, `input.sendWhenBusy` decides: `interrupt` (default) delivers the message to the running turn at once, `wait` queues it until the turn ends. The setting is read when the message is sent. Unless you turn on the [spoken stop phrase](#spoken-stop-phrase), there are no spoken commands and no open microphone, and nothing is ever sent automatically at the time cap.
+
+**Spoken stop phrase.** See [below](#spoken-stop-phrase).
 
 **Provider and language are fixed when a recording starts.** `/talk provider ...` or a configuration edit made mid-recording applies to the next recording only.
 
-**Privacy.** Audio is kept in memory, never written to disk, logged, or cached, and released when the request ends or the recording is discarded. A recording you send (by stopping it, or by sending one held at the time cap) goes as one upload to the fixed production endpoint of the selected provider, with no redirects, retries, or fallback to the other provider. Neither Deepgram's nor ElevenLabs' standard tier is a zero-retention guarantee, and sent audio cannot be recalled. A recording you discard, or one held at the time cap and not sent, never leaves the machine. The transcript exists only in the composer or in the message you chose to send. Transcription is billed per audio second; after a timeout it is unknown whether the attempt was billed. The recorder runs without either API key in its environment, but it inherits audio variables such as `PULSE_SERVER`, so audio routing is your setting.
+**Privacy.** Audio is kept in memory, never written to disk, logged, or cached, and released when the request ends or the recording is discarded. A recording you send (by stopping it, or by sending one held at the time cap) goes as one upload to the fixed production endpoint of the selected provider, with no redirects, retries, or fallback to the other provider. Neither Deepgram's nor ElevenLabs' standard tier is a zero-retention guarantee, and sent audio cannot be recalled. While the stop phrase is off, a recording you discard, or one held at the time cap and not sent, never leaves the machine; with it on, audio is streamed as you speak (see below). The transcript exists only in the composer or in the message you chose to send. Transcription is billed per audio second; after a timeout it is unknown whether the attempt was billed. The recorder runs without either API key in its environment, but it inherits audio variables such as `PULSE_SERVER`, so audio routing is your setting.
+
+### Spoken stop phrase
+
+Optionally, end a dictation by voice: say a phrase such as "let's go" as the last words, pause, and the recording stops and is sent, without the phrase. It is off by default. To turn it on, set two values in the `input` block (`input.stopPhrases` is used only while `input.stopOnPhrase` is `true`):
+
+```json
+"input": {
+  "provider": "elevenlabs",
+  "stopOnPhrase": true,
+  "stopPhrases": ["let's go", "send it"]
+}
+```
+
+`input.stopPhrases` holds 1 to 10 phrases of 1 to 40 characters each (default `["let's go"]`). Choose phrases you do not say in ordinary sentences.
+
+**How detection works.** While you record, the audio streams to ElevenLabs live transcription (model `scribe_v2_realtime`), which settles a stretch of speech after a pause of about 1 second. The phrase counts only when it is the last words of that settled text, ignoring case, punctuation, and apostrophe style, so "let's go through the loader" does not stop the recording. When it matches, the recorder stops, the phrase is removed, and the rest is sent as with the send key: appended to the composer, then sent as one plain message, following `input.sendWhenBusy` and the same pre-send checks (no model, compaction). If nothing remains after the phrase, nothing is sent and the composer is unchanged.
+
+**ElevenLabs only.** It needs `ELEVENLABS_API_KEY` and the input provider ElevenLabs when the recording starts. With Deepgram selected, the press reports that the stop phrase needs ElevenLabs and records nothing; the extension never switches provider for you. `/talk provider elevenlabs` selects it for the session.
+
+**Privacy.** While the stop phrase is on, audio is sent to ElevenLabs as you speak, not after you stop. Escape stops the recording and sends no message, but it cannot recall audio ElevenLabs has already received. This is not a zero-retention guarantee. The streamed audio is not uploaded a second time. `/speak status` and help show whether the stop phrase is on and which phrases count.
+
+**Keys and Escape while streaming.** Either shortcut, `/talk`, or `/talk send` still stops the recording: the extension asks for the last text, waits up to `requestTimeoutMs` for it, and delivers it in that key's mode (send or transcribe only), without removing any phrase. Escape closes the stream at once and sends nothing. At `input.maxSeconds` the recorder stops and the text is held, unsent, until your next key or command; Escape, a session change, or shutdown discards it. A shorter than 0.5 second recording is discarded as usual. Session changes and shutdown close the stream and ignore late messages.
+
+**Failures.** An authentication error, quota or rate limit, size limit, session time limit, any other provider error, a connection that does not open within `requestTimeoutMs`, a final text that does not arrive in time, or an unexpected close ends the recording with a sanitized message naming the class. Text already received is added to the composer without sending it. There is no retry, no reconnect, and no fallback to the one-shot upload.
 
 ## Provider behavior and limits
 
@@ -161,7 +189,7 @@ The provider keys remain in the Pi process environment. Same-user processes and 
 
 ## Not in this version
 
-`/speak summary`, confirmation prompts, secret-pattern blocking, cache clearing, and local usage accounting are not available. Voice input has no silence detection, no streaming partial text, no spoken commands, and no open microphone.
+`/speak summary`, confirmation prompts, secret-pattern blocking, cache clearing, and local usage accounting are not available. Voice input has no silence detection on this machine, no partial text, no open microphone, and no spoken command other than the optional stop phrase, which works with ElevenLabs only.
 
 ## Development
 
