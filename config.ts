@@ -28,10 +28,15 @@ export interface DeepgramConfig {
   sttModel: string;
 }
 
-/** The two push-to-talk keys as Pi registered them at load. */
+/** The push-to-talk keys of each mode as Pi registered them at load. */
 export interface Shortcuts {
-  send: string;
-  transcribe: string;
+  send: string[];
+  transcribe: string[];
+}
+
+/** The keys of one mode as the status lines and help name them, for example `alt+t / alt+y`. */
+export function formatKeys(keys: string[]): string {
+  return keys.join(" / ");
 }
 
 export interface SpeakConfig {
@@ -41,8 +46,8 @@ export interface SpeakConfig {
     provider: SpeechProvider;
     language?: string;
     maxSeconds: number;
-    shortcut: string;
-    transcribeShortcut: string;
+    shortcut: string[];
+    transcribeShortcut: string[];
     sendWhenBusy: "interrupt" | "wait";
     stopOnPhrase: boolean;
     stopPhrases: string[];
@@ -367,13 +372,23 @@ function parseStopPhrases(value: unknown): string[] {
   });
 }
 
+/** One key or a list of 1 to 4 keys, as a list. */
+function parseShortcutKeys(value: unknown, name: string): string[] {
+  const keys = Array.isArray(value) ? value : [value];
+  if (keys.length < 1 || keys.length > 4)
+    fail(`${name} must be one key or a list of 1 to 4 keys`);
+  return keys.map((key) =>
+    checkedString(key, name, /^.{1,100}$/, `${name} must be a non-empty string or a list of 1 to 4 non-empty strings`),
+  );
+}
+
 function parseInput(value: unknown): SpeakConfig["input"] {
   if (value === undefined)
     return {
       provider: DEFAULTS.inputProvider,
       maxSeconds: DEFAULTS.inputMaxSeconds,
-      shortcut: DEFAULTS.inputShortcut,
-      transcribeShortcut: DEFAULTS.inputTranscribeShortcut,
+      shortcut: [DEFAULTS.inputShortcut],
+      transcribeShortcut: [DEFAULTS.inputTranscribeShortcut],
       sendWhenBusy: DEFAULTS.inputSendWhenBusy,
       stopOnPhrase: DEFAULTS.inputStopOnPhrase,
       stopPhrases: [...DEFAULTS.inputStopPhrases],
@@ -393,20 +408,17 @@ function parseInput(value: unknown): SpeakConfig["input"] {
     fail('input.sendWhenBusy must be "interrupt" or "wait"');
   const stopOnPhrase = value.stopOnPhrase ?? DEFAULTS.inputStopOnPhrase;
   if (typeof stopOnPhrase !== "boolean") fail("input.stopOnPhrase must be true or false");
-  const shortcut = checkedString(
-    value.shortcut ?? DEFAULTS.inputShortcut,
-    "input.shortcut",
-    /^.{1,100}$/,
-    "input.shortcut must be a non-empty string",
-  );
-  const transcribeShortcut = checkedString(
+  const shortcut = parseShortcutKeys(value.shortcut ?? DEFAULTS.inputShortcut, "input.shortcut");
+  const transcribeShortcut = parseShortcutKeys(
     value.transcribeShortcut ?? DEFAULTS.inputTranscribeShortcut,
     "input.transcribeShortcut",
-    /^.{1,100}$/,
-    "input.transcribeShortcut must be a non-empty string",
   );
-  if (shortcut.toLowerCase() === transcribeShortcut.toLowerCase())
-    fail("input.shortcut and input.transcribeShortcut must be different keys");
+  const seen = new Set<string>();
+  for (const key of [...shortcut, ...transcribeShortcut]) {
+    if (seen.has(key.toLowerCase()))
+      fail(`input.shortcut and input.transcribeShortcut must be different keys; "${key}" is repeated`);
+    seen.add(key.toLowerCase());
+  }
   return {
     provider,
     language:

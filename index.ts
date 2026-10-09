@@ -10,7 +10,7 @@ import { TalkController } from "./talk.ts";
 import { normalizeExplicitText, prepareAnswerText } from "./text.ts";
 import type { TranslationFailureRecord } from "./translation-failure.ts";
 
-const DEFAULT_SHORTCUTS: Shortcuts = { send: "alt+t", transcribe: "alt+shift+t" };
+const DEFAULT_SHORTCUTS: Shortcuts = { send: ["alt+t"], transcribe: ["alt+shift+t"] };
 
 const NOT_AVAILABLE = (name: string) =>
   `/speak ${name} is not available in this version.`;
@@ -110,7 +110,7 @@ function speakLatestAnswer(
 }
 
 /**
- * Registers `/speak`, `/talk`, the two push-to-talk shortcuts, four lifecycle handlers that can
+ * Registers `/speak`, `/talk`, every push-to-talk shortcut, four lifecycle handlers that can
  * only cancel this extension's own work, and three compaction handlers that only note whether Pi is
  * compacting. Nothing is read, spawned, or sent at registration.
  */
@@ -142,14 +142,16 @@ export function registerSpeak(
       await controller.provider("input", name, ctx.ui);
     },
   });
-  pi.registerShortcut(shortcuts.send as KeyId, {
-    description: "Start or stop push-to-talk voice input; stopping sends the transcribed message",
-    handler: (ctx) => talk.press(ctx, "send"),
-  });
-  pi.registerShortcut(shortcuts.transcribe as KeyId, {
-    description: "Start or stop push-to-talk voice input; stopping only adds the text to the composer",
-    handler: (ctx) => talk.press(ctx, "transcribe"),
-  });
+  for (const key of shortcuts.send)
+    pi.registerShortcut(key as KeyId, {
+      description: "Start or stop push-to-talk voice input; stopping sends the transcribed message",
+      handler: (ctx) => talk.press(ctx, "send"),
+    });
+  for (const key of shortcuts.transcribe)
+    pi.registerShortcut(key as KeyId, {
+      description: "Start or stop push-to-talk voice input; stopping only adds the text to the composer",
+      handler: (ctx) => talk.press(ctx, "transcribe"),
+    });
 
   const reset = () => {
     controller.resetSession();
@@ -173,7 +175,7 @@ export function registerSpeak(
 
 /**
  * Speech and recording happen only when the user runs `/speak`, `/talk`, or a shortcut. Loading
- * reads the configuration file once, for the two shortcuts, and does nothing else.
+ * reads the configuration file once, for the shortcuts, and does nothing else.
  */
 export default async function speak(
   pi: ExtensionAPI,

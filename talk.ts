@@ -2,6 +2,7 @@ import { matchesKey } from "@earendil-works/pi-tui";
 import {
   API_KEY_ENV,
   DEEPGRAM_API_KEY_ENV,
+  formatKeys,
   loadConfig,
   readProviderApiKey,
   type Shortcuts,
@@ -205,8 +206,9 @@ export class TalkController {
       onChunk: (chunk) => session?.sendAudio(chunk),
       // The cap holds the recording at once, not when the recorder exits, so a late phrase cannot send it.
       onCapped: () => {
-        if (recording && this.active === recording && recording.phase === "recording")
-          recording.phase = "held";
+        if (!recording || this.active !== recording || recording.phase !== "recording") return;
+        recording.phase = "held";
+        this.render(recording);
       },
       onLevel: (level) => {
         if (!recording || this.active !== recording || recording.phase !== "recording")
@@ -460,9 +462,9 @@ export class TalkController {
     let text: string;
     if (rec.phase === "recording") {
       const bar = LEVEL_BARS[rec.level - 1] ?? "·";
-      text = `● Recording ${formatElapsed(this.deps.now() - rec.startedAt)} ${bar} — ${this.shortcuts.send} stop and send · ${this.shortcuts.transcribe} stop, transcribe only · Esc discard`;
+      text = `● Recording ${formatElapsed(this.deps.now() - rec.startedAt)} ${bar} — ${formatKeys(this.shortcuts.send)} stop and send · ${formatKeys(this.shortcuts.transcribe)} stop, transcribe only · Esc discard`;
     } else if (rec.phase === "held") {
-      text = `Recording limit reached (${rec.maxSeconds} s), not sent — ${this.shortcuts.send} send · ${this.shortcuts.transcribe} transcribe only · Esc discard`;
+      text = `Recording limit reached (${rec.maxSeconds} s), not sent — ${formatKeys(this.shortcuts.send)} send · ${formatKeys(this.shortcuts.transcribe)} transcribe only · Esc discard`;
     } else {
       text = "Transcribing…";
     }

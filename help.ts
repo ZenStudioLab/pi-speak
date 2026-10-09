@@ -1,4 +1,4 @@
-import { loadConfig, type Shortcuts } from "./config.ts";
+import { formatKeys, loadConfig, type Shortcuts } from "./config.ts";
 import type { SpeakDeps } from "./speech-job.ts";
 
 /**
@@ -39,9 +39,9 @@ export async function buildHelp(
     "/talk provider [deepgram|elevenlabs|reset]  report or select the voice input provider for this session",
     "/talk help | ?         show this help",
     "",
-    `${send} sends: it stops a recording, transcribes it, and sends the composer (same as /talk send).`,
-    `${transcribe} transcribes only: it stops a recording and adds the text to the composer (same as /talk).`,
-    "Either key or command starts a recording; the one that stops it decides whether the message is sent.",
+    `${formatKeys(send)} sends: it stops a recording, transcribes it, and sends the composer (same as /talk send).`,
+    `${formatKeys(transcribe)} transcribes only: it stops a recording and adds the text to the composer (same as /talk).`,
+    "Any of these keys or commands starts a recording; the one that stops it decides whether the message is sent.",
     "Escape: while a recording is starting it cancels the attempt; while recording or held at the time cap it discards the audio. Nothing is sent.",
     `Speech locale: ${locale}`,
     `Stop phrase: ${stopPhrase}`,

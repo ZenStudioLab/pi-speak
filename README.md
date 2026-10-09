@@ -63,7 +63,7 @@ This extension is local to this repository. It is loaded explicitly with `pi -e`
 
    **What is required.** Only the selected provider's voice settings are needed: `providers.elevenlabs.voiceId` and `modelId`, or `providers.deepgram.voice` (an Aura voice whose last segment is its language, such as `aura-2-thalia-en`). Everything else has a default, and `translation` is unconfigured by default.
 
-   **Defaults.** `provider` is `elevenlabs`. The ElevenLabs `outputFormat` is `mp3_44100_128`, `voiceRevision` is `1`, and `sttModel` is `scribe_v2`; the Deepgram `sttModel` is `nova-3`. `input.provider` is `deepgram`, `input.maxSeconds` is `120` (range 1–300), `input.shortcut` (the key that sends) is `alt+t`, `input.transcribeShortcut` (the key that only transcribes) is `alt+shift+t`, `input.sendWhenBusy` is `interrupt` (or `wait`), `input.stopOnPhrase` is `false` and `input.stopPhrases` is `["let's go"]` (see [Spoken stop phrase](#spoken-stop-phrase)), and `input.language` is unset, so the provider detects the language. The two shortcuts must differ. `locale` is `vi`, `hardLimitChars` is `10000` (it may lower, never raise, a provider's limit), `requestTimeoutMs` is `45000`, and the player and cache are as shown. Unknown keys are rejected, so a pasted secret is refused rather than stored.
+   **Defaults.** `provider` is `elevenlabs`. The ElevenLabs `outputFormat` is `mp3_44100_128`, `voiceRevision` is `1`, and `sttModel` is `scribe_v2`; the Deepgram `sttModel` is `nova-3`. `input.provider` is `deepgram`, `input.maxSeconds` is `120` (range 1–300), `input.shortcut` (the key that sends) is `alt+t`, `input.transcribeShortcut` (the key that only transcribes) is `alt+shift+t`, `input.sendWhenBusy` is `interrupt` (or `wait`), `input.stopOnPhrase` is `false` and `input.stopPhrases` is `["let's go"]` (see [Spoken stop phrase](#spoken-stop-phrase)), and `input.language` is unset, so the provider detects the language. Each shortcut setting also accepts a list of 1 to 4 keys (see [Extra shortcut keys](#extra-shortcut-keys)), and no key may appear twice across both, ignoring case. `locale` is `vi`, `hardLimitChars` is `10000` (it may lower, never raise, a provider's limit), `requestTimeoutMs` is `45000`, and the player and cache are as shown. Unknown keys are rejected, so a pasted secret is refused rather than stored.
 
    **Voice revision.** Raise `providers.elevenlabs.voiceRevision` whenever you change or re-clone the voice behind the same ID, so older cached clips are not reused.
 
@@ -77,7 +77,7 @@ This extension is local to this repository. It is loaded explicitly with `pi -e`
    pi -e /absolute/path/to/pi-toolset/extensions/speak/index.ts
    ```
 
-Invalid configuration is reported when you use `/speak`, `/speak status`, or voice input, and does not stop Pi from starting. Loading reads the configuration file once, only to learn the two shortcuts.
+Invalid configuration is reported when you use `/speak`, `/speak status`, or voice input, and does not stop Pi from starting. Loading reads the configuration file once, only to learn the shortcuts.
 
 ## Commands
 
@@ -100,12 +100,12 @@ Invalid configuration is reported when you use `/speak`, `/speak status`, or voi
 | `/talk send` | Start recording; run it again to stop, transcribe, and **send** the composer. Same as `alt+t`. |
 | `/talk provider [deepgram\|elevenlabs\|reset]` | Report or select the voice-input provider for this session. |
 | `/talk help` or `/talk ?` | Show the same combined help as `/speak help`. |
-| `alt+t` (`input.shortcut`) | Push-to-talk that sends: the same as `/talk send`. |
-| `alt+shift+t` (`input.transcribeShortcut`) | Push-to-talk that only transcribes: the same as `/talk`. |
+| `alt+t` (`input.shortcut`, one key or a list) | Push-to-talk that sends: the same as `/talk send`. |
+| `alt+shift+t` (`input.transcribeShortcut`, one key or a list) | Push-to-talk that only transcribes: the same as `/talk`. |
 
 Provider and locale commands never write the configuration file. A selection stays in force across session switching, forking, and tree navigation, and ends on restart, reload, or `reset`, which returns to the value in the file. A running speech job or recording keeps the provider and locale captured when it started. Speech and voice input work only in the interactive terminal.
 
-**Help.** `/speak help`, `/talk help`, and `?` in place of `help` print the same text: every form above, the two shortcuts registered at load and which one sends, what `Esc` does, and the effective speech locale. Any unknown argument to `/speak` or `/talk` prints it too. It reads the configuration file (for the locale) but makes no request and works in every run mode; a shortcut you edited but have not reloaded is not shown, and if the file has an error, it still shows the registered shortcuts and says so.
+**Help.** `/speak help`, `/talk help`, and `?` in place of `help` print the same text: every form above, every shortcut key registered at load and which keys send, what `Esc` does, and the effective speech locale. Any unknown argument to `/speak` or `/talk` prints it too. It reads the configuration file (for the locale) but makes no request and works in every run mode; a shortcut you edited but have not reloaded is not shown, and if the file has an error, it still shows the registered shortcuts and says so.
 
 **Speech locale.** The locale used for a `/speak` is, in order, the tag in `/speak in <tag>`, the session locale from `/speak locale <tag>`, then `locale` in the file (default `vi`). Tags are checked and canonicalized (`en-us` becomes `en-US`); a malformed tag changes nothing and makes no request. The same locale drives the Deepgram voice-language check, the translation, and the translation and audio cache keys. `/speak original` and `/speak text` never translate.
 
@@ -115,7 +115,16 @@ Dictate a prompt: press a shortcut, speak, press a shortcut again. **The key tha
 
 > **Warning: the default `alt+t` now sends.** A misheard phrase reaches the agent without review, and with the default `input.sendWhenBusy` of `interrupt` it can redirect a turn that is already running. Use `alt+shift+t` or `/talk` to review first, or set `input.sendWhenBusy` to `wait`.
 
-**Setup.** Install one of `rec`, `arecord`, or `ffmpeg` (tried in that order; `ffmpeg` records from PulseAudio's default source). Export the key for the input provider (`DEEPGRAM_API_KEY` for `deepgram`, `ELEVENLABS_API_KEY` for `elevenlabs`). The optional `input` block selects the provider, a language, the length cap (default 120 seconds, at most 300), the two shortcuts, and `sendWhenBusy` as shown above. `input.language` is independent of the speech `locale`; omit it and the provider detects the language. If you only dictate, you may leave out `providers.elevenlabs.voiceId`; a placeholder left in it is still refused. Changed shortcuts take effect after `/reload`. `/speak status` shows the recording tool it found, key presence, and the effective input provider, model, and language.
+**Setup.** Install one of `rec`, `arecord`, or `ffmpeg` (tried in that order; `ffmpeg` records from PulseAudio's default source). Export the key for the input provider (`DEEPGRAM_API_KEY` for `deepgram`, `ELEVENLABS_API_KEY` for `elevenlabs`). The optional `input` block selects the provider, a language, the length cap (default 120 seconds, at most 300), the two shortcuts, and `sendWhenBusy` as shown above. `input.language` is independent of the speech `locale`; omit it and the provider detects the language. If you only dictate, you may leave out `providers.elevenlabs.voiceId`; a placeholder left in it is still refused. Changed shortcuts take effect after `/reload`. Loading reads the configuration once for the shortcuts; if it cannot be read, only the two defaults are registered. `/speak status` shows the recording tool it found, key presence, and the effective input provider, model, and language.
+
+**Extra shortcut keys.** `input.shortcut` and `input.transcribeShortcut` each accept one key or a list of 1 to 4 keys, so you can bind more than one key to a mode:
+
+```json
+"shortcut": ["alt+t", "alt+y"],
+"transcribeShortcut": ["alt+shift+t", "alt+shift+y"]
+```
+
+Every listed key works like the first: the `shortcut` keys send and the `transcribeShortcut` keys only transcribe, and any key can start a recording. A key repeated anywhere across both settings, ignoring case, is a configuration error, and then only the two defaults are registered. Help and the recording status lines name every key of each mode, for example `alt+t / alt+y`. Note that `alt+y` is Pi's editor yank-pop (paste an earlier deleted text after `Ctrl+Y`); binding it here replaces yank-pop, and Pi shows a shortcut conflict notice at startup. The defaults `alt+t` and `alt+shift+t` have no such conflict.
 
 **Controls.** Either shortcut, `/talk`, or `/talk send` starts a recording; starting carries no decision.
 
@@ -163,7 +172,7 @@ Optionally, end a dictation by voice: say a phrase such as "let's go" as the las
 
 **Keys and Escape while streaming.** Either shortcut, `/talk`, or `/talk send` still stops the recording: the extension asks for the last text, waits up to `requestTimeoutMs` for it, and delivers it in that key's mode (send or transcribe only), without removing any phrase. Escape closes the stream at once and sends nothing. At `input.maxSeconds` the recorder stops and the text is held, unsent, until your next key or command; Escape, a session change, or shutdown discards it. A shorter than 0.5 second recording is discarded as usual. Session changes and shutdown close the stream and ignore late messages.
 
-**Failures.** An authentication error, quota or rate limit, size limit, session time limit, any other provider error, a connection that does not open within `requestTimeoutMs`, a final text that does not arrive in time, or an unexpected close ends the recording with a sanitized message naming the class. Text already received is added to the composer without sending it. There is no retry, no reconnect, and no fallback to the one-shot upload.
+**Failures.** An authentication error, quota or rate limit, size limit, session time limit, any other provider error, a connection that does not open within `requestTimeoutMs`, a final text that does not arrive in time, a recorder that fails while recording, or an unexpected close ends the recording with a sanitized message naming the class. Text already received is added to the composer without sending it. There is no retry, no reconnect, and no fallback to the one-shot upload.
 
 ## Provider behavior and limits
 
