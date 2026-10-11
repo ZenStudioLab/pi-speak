@@ -1,0 +1,35 @@
+{
+  "name": "pi-speak",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi extension: speak answers aloud and dictate prompts by push-to-talk, through ElevenLabs or Deepgram.",
+  "license": "MIT",
+  "author": "ZenStudioLab",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZenStudioLab/pi-speak.git"
+  },
+  "homepage": "https://github.com/ZenStudioLab/pi-speak#readme",
+  "bugs": { "url": "https://github.com/ZenStudioLab/pi-speak/issues" },
+  "keywords": ["pi-package", "pi", "extension", "speech", "text-to-speech", "voice-input"],
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "check": "npm run typecheck && npm test"
+  },
+  "pi": { "extensions": ["./index.ts"] },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@earendil-works/pi-tui": "0.87.1",
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
+  }
+}
