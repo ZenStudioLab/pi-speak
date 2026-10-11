@@ -2,7 +2,7 @@
 
 Hear a Pi answer in a configurable language (default `vi`), or speak text you type, through the selected speech provider. Dictate a prompt by push-to-talk: one key sends it to the agent as soon as it is transcribed, and a second key only adds the text to the composer for you to review. **The default key `alt+t` now sends; use `alt+shift+t` to review first.** Two more keys turn a spoken command or skill name into text in the editor (`alt+m`, `alt+i`), and an optional setting lets you hold Space to dictate. Nothing is translated, spoken, recorded, or sent anywhere unless you run `/speak`, run `/talk`, press a push-to-talk shortcut, or, with `input.holdSpace` on, hold Space. Loading, reloading, prompts, tools, and agent completion are silent.
 
-This extension is local to this repository. It is loaded explicitly with `pi -e` and is not part of the published package.
+`pi-speak` is a standalone Pi extension by ZenStudioLab. It is also included in [pi-toolset](https://github.com/ZenStudioLab/pi-toolset) as a submodule at `extensions/speak`. It is not published to npm: load it explicitly with `pi -e`, or install it from git with `pi install git:github.com/ZenStudioLab/pi-speak`. Design records (ADRs 0002–0008) and the OpenSpec changes behind it live in the [pi-toolset repository](https://github.com/ZenStudioLab/pi-toolset/tree/main/docs/adr).
 
 ## Setup
 
@@ -78,7 +78,7 @@ This extension is local to this repository. It is loaded explicitly with `pi -e`
 6. **Load the extension:**
 
    ```bash
-   pi -e /absolute/path/to/pi-toolset/extensions/speak/index.ts
+   pi -e /absolute/path/to/pi-speak/index.ts
    ```
 
 Invalid configuration is reported when you use `/speak`, `/speak status`, or voice input, and does not stop Pi from starting. Loading reads the configuration file once, only to learn the shortcuts.
@@ -268,6 +268,7 @@ The provider keys remain in the Pi process environment. Same-user processes and 
 ## Development
 
 ```bash
+npm install
 npm run check
 ```
 
