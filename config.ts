@@ -37,12 +37,14 @@ export interface DeepgramConfig {
   sttModel: string;
 }
 
-/** The push-to-talk keys of each mode as Pi registered them at load. */
+/** The shortcut keys of each mode as Pi registered them at load. */
 export interface Shortcuts {
   send: string[];
   transcribe: string[];
   command: string[];
   skill: string[];
+  /** The keys that start and end live mode; not push-to-talk keys, so `pushToTalkKeys` leaves them out. */
+  live: string[];
   /** `input.holdSpace` as read at load; it takes effect after a reload. */
   holdSpace: boolean;
 }

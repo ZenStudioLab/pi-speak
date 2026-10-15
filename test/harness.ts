@@ -236,6 +236,7 @@ export async function createHarness(
     transcribe: ["alt+shift+t"],
     command: ["alt+m"],
     skill: ["alt+i"],
+    live: ["alt+l"],
     holdSpace: options.holdClock !== undefined,
     ...options.shortcuts,
   };
@@ -286,20 +287,22 @@ export async function createHarness(
   const talkStatuses: (string | undefined)[] = [];
   const liveStatuses: (string | undefined)[] = [];
   const keyListeners = new Set<(data: string) => { consume?: boolean } | undefined>();
-  const widgets: { key: string; content: string[] | undefined }[] = [];
+  const widgets: { key: string; content: string[] | undefined; placement?: string }[] = [];
   let aborts = 0;
   const statusSink = (key: string) =>
     key === "speak-talk" ? talkStatuses : key === "speak-live" ? liveStatuses : statuses;
 
+  /** The context's session: the one given, or an in-memory session holding `messages`. */
+  function sessionFor(ctxOptions: CtxOptions, cwd: string) {
+    if (ctxOptions.sessionManager) return ctxOptions.sessionManager;
+    const session = SessionManager.inMemory(cwd);
+    for (const message of ctxOptions.messages ?? []) session.appendMessage(message as never);
+    return session;
+  }
+
   async function run(args: string, ctxOptions: CtxOptions = {}) {
     const cwd = ctxOptions.cwd ?? dir;
-    let sessionManager = ctxOptions.sessionManager;
-    if (!sessionManager) {
-      const session = SessionManager.inMemory(cwd);
-      for (const message of ctxOptions.messages ?? [])
-        session.appendMessage(message as never);
-      sessionManager = session;
-    }
+    const sessionManager = sessionFor(ctxOptions, cwd);
     // SAFETY: The router uses this UI, registry, cwd, idle/pending flags and the real session boundary.
     const ctx = {
       mode: ctxOptions.mode ?? "tui",
@@ -333,7 +336,9 @@ export async function createHarness(
       ui: {
         notify: (message: string, level?: string) => notices.push({ message, level }),
         setStatus: (key: string, text: string | undefined) => statusSink(key).push(text),
-        setWidget: () => undefined,
+        setWidget: (key: string, content: string[] | undefined, widgetOptions?: { placement?: string }) => {
+          widgets.push({ key, content, placement: widgetOptions?.placement });
+        },
         getEditorText: () => editor.text,
         setEditorText: (text: string) => {
           editor.text = text;
@@ -345,9 +350,14 @@ export async function createHarness(
       },
       isIdle: () => ctxOptions.isIdle?.() ?? ctxOptions.idle ?? true,
       hasPendingMessages: () => false,
-      sessionManager: SessionManager.inMemory(cwd),
+      sessionManager: sessionFor(ctxOptions, cwd),
       abort: () => aborts++,
     } as unknown as ExtensionCommandContext;
+  }
+
+  /** Fires `agent_end` as Pi does when a run finishes; the context's session holds the run's `messages`. */
+  function agentEnd(ctxOptions: CtxOptions = {}) {
+    events.get("agent_end")!({ type: "agent_end", messages: [] }, talkContext(ctxOptions));
   }
 
   async function runTalk(args: string, ctxOptions: CtxOptions = {}) {
@@ -372,6 +382,11 @@ export async function createHarness(
   /** Presses the first registered skill key (`alt+i` unless `shortcuts` was given). */
   async function pressSkillShortcut(ctxOptions: CtxOptions = {}) {
     await shortcuts.get(registered.skill[0]!)!(talkContext(ctxOptions));
+  }
+
+  /** Presses the first registered live key (`alt+l` unless `shortcuts` was given). */
+  async function pressLiveShortcut(ctxOptions: CtxOptions = {}) {
+    await shortcuts.get(registered.live[0]!)!(talkContext(ctxOptions));
   }
 
   /** Presses one registered key by name, whichever mode it belongs to. */
@@ -411,7 +426,9 @@ export async function createHarness(
     pressTranscribeShortcut,
     pressCommandShortcut,
     pressSkillShortcut,
+    pressLiveShortcut,
     pressKey,
+    agentEnd,
     sendKey,
     sent,
     hostErrors,

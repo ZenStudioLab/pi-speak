@@ -4,6 +4,7 @@ import { redact } from "./elevenlabs.ts";
 import { systemClock, type HoldClock } from "./hold-space.ts";
 import { LiveSpeech } from "./live-speech.ts";
 import { matchesLiveStopPhrase, nodeWebSocket, openRealtime, primarySubtags, type RealtimeSession } from "./realtime.ts";
+import { splitReply } from "./reply-parts.ts";
 import { RECORDER_TOOLS, findRecorder, startRecorder, type RecorderExit, type RecorderHandle } from "./record.ts";
 import type { SpeakAloudSwitch } from "./speak-aloud.ts";
 import type { SpeakDeps, SpeechController } from "./speech-job.ts";
@@ -13,9 +14,18 @@ import type { SendMessage, TalkContext, TalkMode, TalkUi } from "./talk-state.ts
 import { checkLength } from "./text.ts";
 
 const STATUS_KEY = "speak-live";
+const WORDS_KEY = "speak-live-words";
+/** The most characters of the words heard so far that the widget shows; a longer partial keeps its last words (D16). */
+const WORDS_MAX_CHARS = 200;
 /** How often the idle limit is checked; the limit is in minutes, so a coarse timer is enough (D9). */
 const IDLE_CHECK_MS = 15_000;
 const HAS_WORDS = /[\p{L}\p{N}]/u;
+
+/** The partial transcript as the widget shows it: all of it, or only its last words when it is long. */
+function lastWords(text: string): string {
+  if (text.length <= WORDS_MAX_CHARS) return text;
+  return `…${text.slice(-WORDS_MAX_CHARS).replace(/^\S*\s/, "")}`;
+}
 
 export type LivePhase = "off" | "starting" | "on";
 
@@ -93,7 +103,7 @@ export class LiveSession {
     return this.state?.phase ?? "off";
   }
 
-  /** `/talk live`: ends live mode, cancels a start in progress, or starts it. */
+  /** `/talk live` and the live key: ends live mode, cancels a start in progress, or starts it. */
   async toggle(ctx: TalkContext): Promise<void> {
     const ui = ctx.ui;
     if (ctx.mode !== "tui") {
@@ -118,7 +128,7 @@ export class LiveSession {
       return;
     }
     ui.notify(
-      `Live mode is ${this.state?.phase === "on" ? "on" : "starting"}. Run /talk live to end live mode; push-to-talk is unavailable meanwhile.`,
+      `Live mode is ${this.state?.phase === "on" ? "on" : "starting"}. Press ${formatKeys(this.shortcuts.live)} or run /talk live to end live mode; push-to-talk is unavailable meanwhile.`,
       "warning",
     );
   }
@@ -126,7 +136,7 @@ export class LiveSession {
   /** Why `/speak` must not speak now, or undefined; the message names how to end live mode. */
   speechBlock(): string | undefined {
     return this.state
-      ? "/speak is unavailable during live mode. Run /talk live to end live mode first."
+      ? `/speak is unavailable during live mode. Press ${formatKeys(this.shortcuts.live)} or run /talk live to end live mode first.`
       : undefined;
   }
 
@@ -146,6 +156,30 @@ export class LiveSession {
     on.idleSince = this.clock.now();
     on.updates.enqueue(text);
     return "Queued: the update will be spoken in order.";
+  }
+
+  /**
+   * Pi's finished answer, already selected and cleaned, read aloud in parts behind the updates waiting. Parts are
+   * queued while their total stays within the limit read when live mode started; a longer answer gets one message
+   * that says the rest was not read, without repeating any of it.
+   */
+  speakReply(text: string): void {
+    const on = this.state;
+    if (on?.phase !== "on") return;
+    let total = 0;
+    for (const part of splitReply(text)) {
+      total += [...part].length;
+      if (total > on.speechLimit) {
+        on.ui.notify(
+          `The answer is longer than the speech limit (${on.speechLimit} characters), so the rest of it was not read aloud.`,
+          "info",
+        );
+        return;
+      }
+      // Reading is activity, as for an update.
+      on.idleSince = this.clock.now();
+      on.updates.enqueue(part);
+    }
   }
 
   /** `/speak stop` while live mode is on also drops the updates that have not started. */
@@ -251,8 +285,7 @@ export class LiveSession {
     session.listen({
       onCommitted: () => this.onCommitted(on),
       onFailure: (failure) => this.fail(on, `${this.redactKey(failure.message)} Live mode ended.`),
-      // Any partial transcript while Pi speaks is the user's voice (barge-in); with muting on none can arrive.
-      onPartial: input.liveListenWhileSpeaking ? () => this.cutOffByVoice(on) : undefined,
+      onPartial: (text) => this.onPartial(on, text, input.liveListenWhileSpeaking),
     });
     // A failure that arrived while the recorder was starting is reported by `listen` at once and has ended live mode.
     if (this.state !== on) return;
@@ -261,9 +294,14 @@ export class LiveSession {
     this.tools.add();
     this.render();
     ui.notify(
-      `Live mode is on. It uses ElevenLabs to listen and to speak, and the microphone streams to ElevenLabs until you end it. The spoken language is ${this.languagesHeard(input.language, input.liveLanguages)}. ${formatKeys(this.shortcuts.send)} cuts Pi off; /talk live ends live mode.`,
+      `Live mode is on. It uses ElevenLabs to listen and to speak, and the microphone streams to ElevenLabs until you end it. The spoken language is ${this.languagesHeard(input.language, input.liveLanguages)}. ${formatKeys(this.shortcuts.send)} cuts Pi off; ${this.endKeys()} ends live mode.`,
       "info",
     );
+  }
+
+  /** The two ways to end live mode, as the status line and start message name them. */
+  private endKeys(): string {
+    return `${formatKeys(this.shortcuts.live)} or /talk live`;
   }
 
   /** Which languages the connection listens for: any, one, or only those listed (the provider drops the rest). */
@@ -272,8 +310,14 @@ export class LiveSession {
     return `limited to ${primarySubtags(language ? [language, ...listed] : listed).join(", ")}`;
   }
 
-  private cutOffByVoice(on: On): void {
-    if (this.state === on) on.updates.cutOff();
+  /**
+   * The words heard so far are only displayed. With barge-in on, any partial while Pi speaks is the user's
+   * voice and cuts Pi off; with muting on none can arrive then, and one that does is shown and nothing more.
+   */
+  private onPartial(on: On, text: string, bargeIn: boolean): void {
+    if (this.state !== on) return;
+    this.showWords(on.ui, [`Hearing: ${lastWords(text)}`]);
+    if (bargeIn) on.updates.cutOff();
   }
 
   /**
@@ -282,6 +326,7 @@ export class LiveSession {
    */
   private onCommitted(on: On): void {
     if (this.state !== on) return;
+    this.showWords(on.ui, undefined);
     const text = on.session.text;
     const turn = text.slice(on.delivered).trim();
     on.delivered = text.length;
@@ -358,6 +403,7 @@ export class LiveSession {
       state.session.close();
       state.updates.end();
       this.clearStatus(state.ui);
+      this.showWords(state.ui, undefined);
     }
     if (message) state.ui.notify(message, level);
     if (state.phase === "on") this.tools.remove();
@@ -371,7 +417,7 @@ export class LiveSession {
     try {
       on.ui.setStatus(
         STATUS_KEY,
-        `● Live — ${on.updates.busy ? "Pi speaking" : "listening"} · ${formatKeys(this.shortcuts.send)} cuts Pi off · /talk live ends live mode${stopPhrase}`,
+        `● Live — ${on.updates.busy ? "Pi speaking" : "listening"} · ${formatKeys(this.shortcuts.send)} cuts Pi off · ${this.endKeys()} ends live mode${stopPhrase}`,
       );
     } catch {
       // The status line is cosmetic; a replaced session's UI may refuse updates.
@@ -381,6 +427,15 @@ export class LiveSession {
   private clearStatus(ui: TalkUi): void {
     try {
       ui.setStatus(STATUS_KEY, undefined);
+    } catch {
+      // As in `render`.
+    }
+  }
+
+  /** The widget above the editor with the words heard so far, or undefined to clear it. */
+  private showWords(ui: TalkUi, lines: string[] | undefined): void {
+    try {
+      ui.setWidget(WORDS_KEY, lines, { placement: "aboveEditor" });
     } catch {
       // As in `render`.
     }

@@ -7,7 +7,7 @@ import { audio, baseConfig, sessionEvent, useTalkHarness, type Harness } from ".
 
 const harness = useTalkHarness();
 const OTHER_TOOLS = ["read", "bash"];
-const KEY_LINE = 'alt+t cuts Pi off · /talk live ends live mode · or say "Dừng cuộc hội thoại"';
+const KEY_LINE = 'alt+t cuts Pi off · alt+l or /talk live ends live mode · or say "Dừng cuộc hội thoại"';
 
 /** Live mode with an update playing and a second one waiting behind it. */
 async function playingWithOneWaiting(h: Harness) {
@@ -162,6 +162,7 @@ test("the status line says Pi is speaking with the cut-off key while an update i
 
 for (const [name, end] of [
   ["/talk live", (h: Harness) => h.runTalk("live")],
+  ["the live key", (h: Harness) => h.pressLiveShortcut()],
   ["a lost connection", (h: Harness) => h.sockets[0]!.emit("close")],
 ] as const)
   test(`ending live mode by ${name} while Pi speaks stops the update, drops the waiting one, and removes the tool`, async () => {

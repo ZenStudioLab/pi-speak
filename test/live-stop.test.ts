@@ -119,9 +119,9 @@ test("the push-to-talk stop phrases are separate: they do not end live mode, and
 });
 
 for (const [name, input, line] of [
-  ["the first default phrase", {}, /^● Live — listening · alt\+t cuts Pi off · \/talk live ends live mode · or say "Dừng cuộc hội thoại"$/],
+  ["the first default phrase", {}, /^● Live — listening · alt\+t cuts Pi off · alt\+l or \/talk live ends live mode · or say "Dừng cuộc hội thoại"$/],
   ["the first configured phrase", { liveStopPhrases: ["end it", "stop"] }, / · or say "end it"$/],
-  ["no phrase when the feature is off", { liveStopPhrases: [] }, /^● Live — listening · alt\+t cuts Pi off · \/talk live ends live mode$/],
+  ["no phrase when the feature is off", { liveStopPhrases: [] }, /^● Live — listening · alt\+t cuts Pi off · alt\+l or \/talk live ends live mode$/],
 ] as const)
   test(`the status line names ${name}`, async () => {
     const h = await harness({ config: baseConfig(input) });

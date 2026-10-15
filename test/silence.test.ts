@@ -46,7 +46,7 @@ async function load(config?: string) {
   return { commands, shortcuts, events, used };
 }
 
-test("loading registers /speak, /talk, all four shortcuts, four cancel-only lifecycle handlers, three compaction-state handlers, and the agent-run tool handler, starting no process or request and changing no active tool", async () => {
+test("loading registers /speak, /talk, all five shortcuts, four cancel-only lifecycle handlers, three compaction-state handlers, the agent-run tool handler, and the agent-end handler, starting no process or request and changing no active tool", async () => {
   const realFetch = globalThis.fetch;
   let globalFetches = 0;
   globalThis.fetch = (async () => {
@@ -56,8 +56,9 @@ test("loading registers /speak, /talk, all four shortcuts, four cancel-only life
   try {
     const { commands, shortcuts, events, used } = await load();
     assert.deepEqual(commands, ["speak", "talk"]);
-    assert.deepEqual(shortcuts, ["alt+t", "alt+shift+t", "alt+m", "alt+i"]);
+    assert.deepEqual(shortcuts, DEFAULT_KEYS);
     assert.deepEqual([...events.keys()].sort(), [
+      "agent_end",
       "before_agent_start",
       "session_before_compact",
       "session_before_fork",
@@ -74,22 +75,24 @@ test("loading registers /speak, /talk, all four shortcuts, four cancel-only life
   assert.equal(globalFetches, 0);
 });
 
-const DEFAULT_KEYS = ["alt+t", "alt+shift+t", "alt+m", "alt+i"];
+const DEFAULT_KEYS = ["alt+t", "alt+shift+t", "alt+m", "alt+i", "alt+l"];
 for (const [name, input, expected] of [
-  ["all four come from the configuration", { shortcut: "ctrl+alt+m", transcribeShortcut: "ctrl+alt+n", commandShortcut: "ctrl+alt+o", skillShortcut: "ctrl+alt+p" }, ["ctrl+alt+m", "ctrl+alt+n", "ctrl+alt+o", "ctrl+alt+p"]],
-  ["one set key keeps the others' defaults", { shortcut: "ctrl+alt+m" }, ["ctrl+alt+m", "alt+shift+t", "alt+m", "alt+i"]],
-  ["the command and skill keys alone", { commandShortcut: "ctrl+alt+o", skillShortcut: ["ctrl+alt+p", "ctrl+alt+q"] }, ["alt+t", "alt+shift+t", "ctrl+alt+o", "ctrl+alt+p", "ctrl+alt+q"]],
-  ["equal keys register the four defaults", { shortcut: "alt+x", transcribeShortcut: "alt+x" }, DEFAULT_KEYS],
+  ["all five come from the configuration", { shortcut: "ctrl+alt+m", transcribeShortcut: "ctrl+alt+n", commandShortcut: "ctrl+alt+o", skillShortcut: "ctrl+alt+p", liveShortcut: "ctrl+alt+q" }, ["ctrl+alt+m", "ctrl+alt+n", "ctrl+alt+o", "ctrl+alt+p", "ctrl+alt+q"]],
+  ["the live key alone", { liveShortcut: ["alt+n", "alt+o"] }, ["alt+t", "alt+shift+t", "alt+m", "alt+i", "alt+n", "alt+o"]],
+  ["a live key equal to a send key registers the five defaults", { liveShortcut: "alt+t" }, DEFAULT_KEYS],
+  ["one set key keeps the others' defaults", { shortcut: "ctrl+alt+m" }, ["ctrl+alt+m", "alt+shift+t", "alt+m", "alt+i", "alt+l"]],
+  ["the command and skill keys alone", { commandShortcut: "ctrl+alt+o", skillShortcut: ["ctrl+alt+p", "ctrl+alt+q"] }, ["alt+t", "alt+shift+t", "ctrl+alt+o", "ctrl+alt+p", "ctrl+alt+q", "alt+l"]],
+  ["equal keys register the five defaults", { shortcut: "alt+x", transcribeShortcut: "alt+x" }, DEFAULT_KEYS],
   [
     "every key of the first two lists is registered",
     { shortcut: ["alt+t", "alt+y"], transcribeShortcut: ["alt+shift+t", "alt+shift+y"] },
-    ["alt+t", "alt+y", "alt+shift+t", "alt+shift+y", "alt+m", "alt+i"],
+    ["alt+t", "alt+y", "alt+shift+t", "alt+shift+y", "alt+m", "alt+i", "alt+l"],
   ],
-  ["a key repeated across the lists registers the four defaults", { shortcut: ["alt+t", "alt+y"], transcribeShortcut: ["alt+shift+t", "Alt+Y"] }, DEFAULT_KEYS],
-  ["a send key equal to the command default registers the four defaults", { shortcut: "alt+m" }, DEFAULT_KEYS],
-  ["a skill key equal to a send key registers the four defaults", { skillShortcut: "alt+t" }, DEFAULT_KEYS],
-  ["a list with five keys registers the four defaults", { shortcut: ["alt+a", "alt+b", "alt+c", "alt+d", "alt+e"] }, DEFAULT_KEYS],
-  ["a bad alias registers the four defaults", { shortcut: "ctrl+alt+m", commandAliases: { "": "/model" } }, DEFAULT_KEYS],
+  ["a key repeated across the lists registers the five defaults", { shortcut: ["alt+t", "alt+y"], transcribeShortcut: ["alt+shift+t", "Alt+Y"] }, DEFAULT_KEYS],
+  ["a send key equal to the command default registers the five defaults", { shortcut: "alt+m" }, DEFAULT_KEYS],
+  ["a skill key equal to a send key registers the five defaults", { skillShortcut: "alt+t" }, DEFAULT_KEYS],
+  ["a list with five keys registers the five defaults", { shortcut: ["alt+a", "alt+b", "alt+c", "alt+d", "alt+e"] }, DEFAULT_KEYS],
+  ["a bad alias registers the five defaults", { shortcut: "ctrl+alt+m", commandAliases: { "": "/model" } }, DEFAULT_KEYS],
 ] as const)
   test(`the shortcuts at load: ${name}`, async () => {
     const { shortcuts, used } = await load(JSON.stringify({ input }));
@@ -97,17 +100,16 @@ for (const [name, input, expected] of [
     assert.deepEqual(used, ["readFile"]);
   });
 
-test("a configuration that cannot be read at load registers the four default shortcuts", async () => {
+test("a configuration that cannot be read at load registers the five default shortcuts", async () => {
   const { shortcuts } = await load("{ not json");
   assert.deepEqual(shortcuts, DEFAULT_KEYS);
 });
 
-test("the extension subscribes to no agent, turn, tool, or message event except before_agent_start, whose handler only removes speak_aloud", async () => {
-  const { events } = await load();
+test("the extension subscribes to no agent, turn, tool, or message event except before_agent_start and agent_end, which do nothing while live mode is off", async () => {
+  const { events, used } = await load();
   for (const event of [
     "session_start",
     "agent_start",
-    "agent_end",
     "turn_start",
     "turn_end",
     "message_end",
@@ -115,6 +117,10 @@ test("the extension subscribes to no agent, turn, tool, or message event except 
     "tool_result",
   ])
     assert.ok(!events.has(event), event);
+  // With live mode off, the agent-end handler must not even look at the context or the finished answer.
+  const untouched = new Proxy({}, { get: () => assert.fail("the context was read") });
+  events.get("agent_end")!({ type: "agent_end", messages: [] }, untouched);
+  assert.deepEqual(used, ["readFile"]);
 });
 
 test("firing every lifecycle handler with nothing active starts no request, process, or file read", async () => {

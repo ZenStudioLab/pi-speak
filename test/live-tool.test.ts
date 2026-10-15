@@ -23,7 +23,9 @@ test("the tool's description and guidance tell the model what the spoken-update 
   const tool = h.host.tools.get("speak_aloud")!;
   const guidance = (tool.promptGuidelines ?? []).join("\n");
   assert.match(guidance, /talking to you by voice/);
-  assert.match(guidance, /acknowledgement.*start.*progress.*long work.*summary.*finish/is);
+  assert.match(guidance, /acknowledgement.*start.*progress.*long work/is);
+  assert.doesNotMatch(guidance, /summary when you finish|short summary/i, "no end summary is asked for");
+  assert.match(guidance, /final written answer is read aloud automatically.*do not repeat or summarize it with speak_aloud/is);
   assert.match(guidance, /language of the user's latest spoken message/);
   assert.match(guidance, /short and speakable.*no code blocks, tables, or long paths/is);
   assert.match(guidance, /written answer.*full record/is);

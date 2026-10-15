@@ -309,6 +309,15 @@ for (const [name, input] of [
   ["a key repeated within the command list", { ...valid, input: { commandShortcut: ["alt+y", "alt+y"] } }],
   ["five command keys", { ...valid, input: { commandShortcut: ["alt+a", "alt+b", "alt+c", "alt+d", "alt+e"] } }],
   ["an empty skill list", { ...valid, input: { skillShortcut: [] } }],
+  ["a live key equal to the send default", { ...valid, input: { liveShortcut: "alt+t" } }],
+  ["a live key equal to the transcribe default", { ...valid, input: { liveShortcut: "alt+shift+t" } }],
+  ["a live key equal to the command default", { ...valid, input: { liveShortcut: "alt+m" } }],
+  ["a live key equal to the skill default", { ...valid, input: { liveShortcut: "ALT+I" } }],
+  ["a send key equal to the live default", { ...valid, input: { shortcut: "alt+l" } }],
+  ["a key repeated within the live list", { ...valid, input: { liveShortcut: ["alt+n", "alt+n"] } }],
+  ["an empty live list", { ...valid, input: { liveShortcut: [] } }],
+  ["five live keys", { ...valid, input: { liveShortcut: ["alt+a", "alt+b", "alt+c", "alt+d", "alt+e"] } }],
+  ["a non-string live key", { ...valid, input: { liveShortcut: 5 } }],
   ["commandAliases that is a list", { ...valid, input: { commandAliases: ["model"] } }],
   ["more than 50 aliases", { ...valid, input: { commandAliases: aliasesOf(51) } }],
   ["an empty alias phrase", { ...valid, input: { commandAliases: { "": "/model" } } }],
@@ -326,7 +335,7 @@ for (const [name, input] of [
   test(`rejects ${name} input setting`, () => {
     const result = parseConfig(input);
     assert.ok(!result.ok);
-    assert.match(result.problem, /input\.(maxSeconds|language|sendWhenBusy|transcribeShortcut|shortcut|stopOnPhrase|stopPhrases|commandShortcut|skillShortcut|commandAliases|holdSpace|liveIdleMinutes|liveListenWhileSpeaking|liveStopPhrases|livePauseSeconds|liveLanguages)/);
+    assert.match(result.problem, /input\.(maxSeconds|language|sendWhenBusy|transcribeShortcut|shortcut|stopOnPhrase|stopPhrases|commandShortcut|skillShortcut|liveShortcut|commandAliases|holdSpace|liveIdleMinutes|liveListenWhileSpeaking|liveStopPhrases|livePauseSeconds|liveLanguages)/);
   });
 }
 
@@ -343,10 +352,22 @@ for (const [name, input, send, transcribe] of [
     assert.deepEqual(result.config.input.transcribeShortcut, transcribe);
   });
 
+for (const [name, input, live] of [
+  ["alt+l by default", undefined, ["alt+l"]],
+  ["one key", { liveShortcut: "alt+n" }, ["alt+n"]],
+  ["a list of four keys", { liveShortcut: ["alt+n", "alt+o", "alt+p", "alt+q"] }, ["alt+n", "alt+o", "alt+p", "alt+q"]],
+  ["alt+t once the send key moves", { shortcut: "alt+s", liveShortcut: "alt+t" }, ["alt+t"]],
+] as const)
+  test(`input.liveShortcut is ${name}`, () => {
+    const result = parseConfig({ ...valid, input });
+    assert.ok(result.ok);
+    assert.deepEqual(result.config.input.liveShortcut, live);
+  });
+
 test("a repeated shortcut key is a configuration error that names the key", () => {
   const result = parseConfig({ ...valid, input: { shortcut: ["alt+t", "alt+y"], transcribeShortcut: ["alt+shift+t", "ALT+Y"] } });
   assert.ok(!result.ok);
-  assert.match(result.problem, /input\.shortcut, input\.transcribeShortcut, input\.commandShortcut and input\.skillShortcut must be different keys; "ALT\+Y" is repeated/);
+  assert.match(result.problem, /input\.shortcut, input\.transcribeShortcut, input\.commandShortcut, input\.skillShortcut and input\.liveShortcut must be different keys; "ALT\+Y" is repeated/);
 });
 
 test("the command and skill keys, aliases and holdSpace default to alt+m, alt+i, none and off", () => {
@@ -427,11 +448,11 @@ test("the command and skill keys, aliases and holdSpace are read, with phrases t
   const limit = { ["x".repeat(40)]: "/a", " a b c d e f g h ": `/${"y".repeat(199)}`, "Mô hình": "/model", ...aliasesOf(47) };
   const result = parseConfig({
     ...valid,
-    input: { commandShortcut: ["alt+j", "alt+k"], skillShortcut: "alt+l", holdSpace: true, commandAliases: limit },
+    input: { commandShortcut: ["alt+j", "alt+k"], skillShortcut: "alt+n", holdSpace: true, commandAliases: limit },
   });
   assert.ok(result.ok);
   assert.deepEqual(result.config.input.commandShortcut, ["alt+j", "alt+k"]);
-  assert.deepEqual(result.config.input.skillShortcut, ["alt+l"]);
+  assert.deepEqual(result.config.input.skillShortcut, ["alt+n"]);
   assert.equal(result.config.input.holdSpace, true);
   assert.equal(result.config.input.commandAliases.length, 50);
   assert.deepEqual(result.config.input.commandAliases.slice(0, 4), [

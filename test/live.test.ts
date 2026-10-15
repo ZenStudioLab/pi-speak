@@ -17,7 +17,7 @@ const liveOn = async (h: Harness) => {
 test("/talk live starts live mode and a second /talk live ends it and closes the microphone", async () => {
   const h = await harness();
   const { child, socket } = await startLive(h);
-  assert.match(h.liveStatuses.at(-1)!, /^● Live — listening · alt\+t cuts Pi off · \/talk live ends live mode · or say "Dừng cuộc hội thoại"$/);
+  assert.match(h.liveStatuses.at(-1)!, /^● Live — listening · alt\+t cuts Pi off · alt\+l or \/talk live ends live mode · or say "Dừng cuộc hội thoại"$/);
   assert.equal(await liveOn(h), true);
   await h.runTalk("live");
   assert.deepEqual(child.signals, ["SIGINT"]);
@@ -46,7 +46,7 @@ test("the start message names ElevenLabs, the language setting, the cut-off key,
   assert.match(plus.notices[0]!.message, /The spoken language is limited to vi, en\./);
 });
 
-test("the connection uses the existing realtime parameters, with the key only in its header, and the recorder streams without it", async () => {
+test("the connection uses the live realtime parameters, with the key only in its header, and the recorder streams without it", async () => {
   const h = await harness();
   const { socket } = await startLive(h);
   const url = new URL(socket.url);
@@ -292,7 +292,7 @@ for (const [name, act] of [
     const h = await harness();
     const { child } = await startLive(h);
     await act(h);
-    assert.match(afterStart(h).join("\n"), /Run \/talk live to end live mode/);
+    assert.match(afterStart(h).join("\n"), /Press alt\+l or run \/talk live to end live mode/);
     assert.equal(h.spawnCalls.length, 1, "only the live recorder exists");
     assert.deepEqual(child.signals, []);
     assert.equal(h.talkStatuses.length, 0);

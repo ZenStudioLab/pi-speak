@@ -51,7 +51,7 @@ export async function reportStatus(
       `live idle limit: ${loaded.config.input.liveIdleMinutes} minutes`,
       `live listen while speaking: ${loaded.config.input.liveListenWhileSpeaking ? "on" : "off"}`,
       `live pause: ${loaded.config.input.livePauseSeconds} seconds`,
-      `live languages: ${loaded.config.input.liveLanguages.join(", ") || "none (not limited)"}`,
+      `live languages: ${loaded.config.input.liveLanguages.join(", ") || "none"}`,
     );
     const cache = cacheFor(loaded.config);
     try {

@@ -43,7 +43,7 @@ export function registerSpeakAloud(pi: Pick<ExtensionAPI, "registerTool">, live:
     description:
       "Speak a short update aloud to the user, who is talking with you by voice in live mode. The text is spoken exactly as written, in the user's own voice. The call returns at once, and the update waits behind any earlier one.",
     promptGuidelines: [
-      "The user is talking to you by voice. Use speak_aloud to say a short acknowledgement when you start on a request, brief progress during long work, and a short summary when you finish.",
+      "The user is talking to you by voice. Use speak_aloud to say a short acknowledgement when you start on a request and brief progress during long work. Your final written answer is read aloud automatically when you finish, so do not repeat or summarize it with speak_aloud.",
       "Write speak_aloud text in the language of the user's latest spoken message. Keep it short and speakable, with no code blocks, tables, or long paths.",
       "Speaking does not replace the written answer, which remains the full record.",
     ],

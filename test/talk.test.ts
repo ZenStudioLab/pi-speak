@@ -203,7 +203,7 @@ test("a recording started with a transcribe key and stopped with the second send
     shortcuts: keys,
     config: baseConfig({ shortcut: keys.send, transcribeShortcut: keys.transcribe }),
   });
-  assert.deepEqual([...h.shortcuts.keys()], [...keys.send, ...keys.transcribe, "alt+m", "alt+i"]);
+  assert.deepEqual([...h.shortcuts.keys()], [...keys.send, ...keys.transcribe, "alt+m", "alt+i", "alt+l"]);
   h.editor.text = "Draft";
   await h.pressKey("alt+shift+y");
   await h.until(() => h.recorderChildren().length === 1);
@@ -629,7 +629,7 @@ test("if the configuration cannot be read at send time the transcript is added b
   await stopAndSettle(h, "pressShortcut");
   assert.equal(h.sent.length, 0);
   assert.equal(h.editor.text, "xin chào");
-  assert.match(h.notices.at(-1)!.message, /added to the composer but not sent: input\.shortcut, input\.transcribeShortcut, input\.commandShortcut and input\.skillShortcut must be different/);
+  assert.match(h.notices.at(-1)!.message, /added to the composer but not sent: input\.shortcut, input\.transcribeShortcut, input\.commandShortcut, input\.skillShortcut and input\.liveShortcut must be different/);
 });
 
 test("equal shortcuts are a configuration error: nothing records and the error names both settings", async () => {
@@ -637,7 +637,7 @@ test("equal shortcuts are a configuration error: nothing records and the error n
   await h.pressShortcut();
   await h.pressTranscribeShortcut();
   assert.equal(h.notices.length, 2);
-  assert.ok(h.notices.every((n) => /input\.shortcut, input\.transcribeShortcut, input\.commandShortcut and input\.skillShortcut must be different/.test(n.message)));
+  assert.ok(h.notices.every((n) => /input\.shortcut, input\.transcribeShortcut, input\.commandShortcut, input\.skillShortcut and input\.liveShortcut must be different/.test(n.message)));
   assert.equal(h.recorderChildren().length, 0);
 });
 

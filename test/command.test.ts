@@ -626,6 +626,27 @@ for (const [name, input, line] of [
     quiet(h);
   });
 
+test("help lists the live key among the registered keys, with its setting and that it also ends live mode while Pi speaks", async () => {
+  const h = await harness({ shortcuts: { live: ["ctrl+alt+l", "ctrl+alt+k"] } });
+  await h.run("help");
+  const help = h.notices.at(-1)!.message;
+  assert.match(help, /^ctrl\+alt\+l \/ ctrl\+alt\+k live \(input\.liveShortcut, default alt\+l\): it starts live mode, or ends it, also while Pi speaks \(same as \/talk live\)\. It never starts a recording\.$/m);
+  assert.match(help, /ends on \/talk live or the live key again/);
+  quiet(h);
+});
+
+test("help describes the words heard so far and the spoken answers: display only, cleaned, in parts, up to the limit, and sent to ElevenLabs", async () => {
+  const h = await harness();
+  await h.run("help");
+  const line = h.notices.at(-1)!.message.split("\n").find((text) => text.startsWith("Live mode, words and answers:"))!;
+  assert.ok(line, "a line about words and answers");
+  assert.match(line, /words you are saying appear above the editor as they are heard, only to look at \(they are not sent, saved, or logged\), and clear at each pause/);
+  assert.match(line, /finishes an answer it is read aloud in your ElevenLabs voice, in parts, cleaned as \/speak original cleans it .* up to the speech length limit; a message says when the rest was not read/);
+  assert.match(line, /A run you abort or that fails is not read/);
+  assert.match(line, /cleaned text of every answer is sent to ElevenLabs for synthesis/);
+  quiet(h);
+});
+
 test("help describes the live pause and languages: the defaults, the complete set without input.language, dropped speech, and push-to-talk", async () => {
   const h = await harness();
   await h.run("help");
@@ -635,6 +656,8 @@ test("help describes the live pause and languages: the defaults, the complete se
   assert.match(line, /input\.liveLanguages \(default \[\]/);
   assert.match(line, /with input\.language unset the list is the complete set of languages heard/);
   assert.match(line, /speech in any other language is dropped/);
+  assert.match(line, /With the list empty, live mode detects any language unless input\.language fixes one\./);
+  assert.doesNotMatch(line, /unlimited/);
   assert.match(line, /Push-to-talk ignores both/);
   quiet(h);
 });
@@ -646,14 +669,15 @@ test("help describes Pi speaking in live mode: the cut-off key, /speak stop, the
   const speaking = help.split("\n").find((line) => line.startsWith("Live mode, Pi speaking:"))!;
   assert.ok(speaking, "a line about Pi speaking");
   assert.match(speaking, /short updates .* in your ElevenLabs voice and in the language you last spoke/);
-  assert.match(speaking, /ctrl\+alt\+s \/ ctrl\+alt\+d or \/speak stop cuts Pi off: it stops the update being spoken and drops the waiting ones, and live mode stays on/);
+  assert.match(speaking, /ctrl\+alt\+s \/ ctrl\+alt\+d or \/speak stop cuts Pi off: it stops the update or answer being spoken and drops the waiting ones, and live mode stays on/);
+  assert.doesNotMatch(speaking, /summary/, "Pi no longer speaks an end summary");
   assert.match(speaking, /muted while Pi speaks and for half a second after/);
   assert.match(speaking, /input\.liveListenWhileSpeaking \(default off\) .* needs headphones or system echo cancellation/);
   quiet(h);
 });
 
 for (const [name, input, idle, listen, pause, languages] of [
-  ["the defaults", undefined, "5 minutes", "off", "2 seconds", "none (not limited)"],
+  ["the defaults", undefined, "5 minutes", "off", "2 seconds", "none"],
   [
     "configured values",
     { liveIdleMinutes: 12, liveListenWhileSpeaking: true, livePauseSeconds: 0.5, liveLanguages: ["vi", "en-US"] },
@@ -671,7 +695,7 @@ for (const [name, input, idle, listen, pause, languages] of [
     assert.ok(text.includes(`live idle limit: ${idle}`));
     assert.ok(text.includes(`live listen while speaking: ${listen}`));
     assert.ok(text.includes(`live pause: ${pause}`));
-    assert.ok(text.includes(`live languages: ${languages}`));
+    assert.ok(text.split("\n").includes(`live languages: ${languages}`));
     quiet(h);
   });
 

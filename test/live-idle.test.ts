@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { audioResponse } from "./harness.ts";
+import { answer, audioResponse } from "./harness.ts";
 import { FakeClock } from "./hold-clock.ts";
 import { afterStart, players, settle, speakAloud, startLive } from "./live-harness.ts";
 import { baseConfig, useTalkHarness } from "./talk-harness.ts";
@@ -65,6 +65,22 @@ test("an update being spoken counts as activity: the limit runs only from when t
   clock.advance(45_000);
   assert.equal(idleMessages(h).length, 0, "at most 45 seconds of idleness since the speech ended");
   clock.advance(30_000);
+  assert.equal(idleMessages(h).length, 1);
+});
+
+test("an answer read aloud counts as activity: a reply that starts and ends between two checks restarts the idle count", async () => {
+  const { h, clock } = await setup();
+  h.setFetch(async () => audioResponse());
+  clock.advance(45_000);
+  h.agentEnd({ messages: answer("Xong rồi.") });
+  await h.until(() => players(h).length === 1);
+  players(h)[0]!.finish(0);
+  await settle();
+  clock.advance(TICK);
+  assert.equal(idleMessages(h).length, 0, "60 seconds since start, 15 since the reply");
+  clock.advance(30_000);
+  assert.equal(idleMessages(h).length, 0, "45 seconds since the reply");
+  clock.advance(TICK);
   assert.equal(idleMessages(h).length, 1);
 });
 

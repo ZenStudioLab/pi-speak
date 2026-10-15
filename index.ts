@@ -18,6 +18,7 @@ const DEFAULT_SHORTCUTS: Shortcuts = {
   transcribe: ["alt+shift+t"],
   command: ["alt+m"],
   skill: ["alt+i"],
+  live: ["alt+l"],
   holdSpace: false,
 };
 
@@ -127,9 +128,10 @@ function speakLatestAnswer(
 }
 
 /**
- * Registers `/speak`, `/talk`, every push-to-talk shortcut, the inactive `speak_aloud` tool, four
+ * Registers `/speak`, `/talk`, every push-to-talk shortcut and the live key, the inactive `speak_aloud` tool, four
  * lifecycle handlers that can only cancel this extension's own work or end live mode, a handler that
- * keeps `speak_aloud` out of agent runs outside live mode, and three compaction handlers that only
+ * keeps `speak_aloud` out of agent runs outside live mode, a handler that reads a finished answer aloud
+ * while live mode is on, and three compaction handlers that only
  * note whether Pi is compacting. With `holdSpace`, it also subscribes the Space listener on each session start. Nothing
  * is read, spawned, or sent at registration.
  */
@@ -186,6 +188,11 @@ export function registerSpeak(
       description: "Start or stop push-to-talk voice input; stopping puts a spoken skill into the editor (nothing runs)",
       handler: (ctx) => talk.press(ctx, "skill", true),
     });
+  for (const key of shortcuts.live)
+    pi.registerShortcut(key as KeyId, {
+      description: "Start or end live mode, as /talk live does (ending also while Pi speaks)",
+      handler: (ctx) => live.toggle(ctx),
+    });
 
   registerSpeakAloud(pi, live);
   const reset = () => {
@@ -206,6 +213,15 @@ export function registerSpeak(
   // a host restored or activated the tool (design D3), never at load.
   pi.on("before_agent_start", () => {
     live.removeToolOutsideLive();
+  });
+  // With live mode off the handler returns before it reads the context; with it on, the finished answer is read
+  // aloud as `/speak original` would speak it (D17). A run that was aborted or failed has no final answer to select.
+  pi.on("agent_end", (_event, ctx) => {
+    if (live.phase !== "on") return;
+    const selection = selectSessionAnswer(ctx.sessionManager, ctx.cwd);
+    if (!selection.ok) return;
+    const prepared = prepareAnswerText(selection.text);
+    if (prepared !== "") live.speakReply(prepared);
   });
   // These only record the state; none returns a result, so compaction is never cancelled or changed.
   pi.on("session_before_compact", () => {
@@ -241,6 +257,7 @@ export default async function speak(
         transcribe: loaded.config.input.transcribeShortcut,
         command: loaded.config.input.commandShortcut,
         skill: loaded.config.input.skillShortcut,
+        live: loaded.config.input.liveShortcut,
         holdSpace: loaded.config.input.holdSpace,
       }
     : DEFAULT_SHORTCUTS;

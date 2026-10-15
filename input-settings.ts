@@ -21,6 +21,8 @@ export interface InputConfig {
   transcribeShortcut: string[];
   commandShortcut: string[];
   skillShortcut: string[];
+  /** Keys that start live mode and end it, as `/talk live` does. */
+  liveShortcut: string[];
   sendWhenBusy: "interrupt" | "wait";
   stopOnPhrase: boolean;
   stopPhrases: string[];
@@ -45,6 +47,7 @@ const DEFAULTS = {
   transcribeShortcut: "alt+shift+t",
   commandShortcut: "alt+m",
   skillShortcut: "alt+i",
+  liveShortcut: "alt+l",
   sendWhenBusy: "interrupt" as const,
   stopOnPhrase: false,
   stopPhrases: ["let's go"],
@@ -64,6 +67,7 @@ const INPUT_KEYS = [
   "transcribeShortcut",
   "commandShortcut",
   "skillShortcut",
+  "liveShortcut",
   "sendWhenBusy",
   "stopOnPhrase",
   "stopPhrases",
@@ -75,7 +79,7 @@ const INPUT_KEYS = [
   "livePauseSeconds",
   "liveLanguages",
 ];
-const SHORTCUT_SETTINGS = ["shortcut", "transcribeShortcut", "commandShortcut", "skillShortcut"] as const;
+const SHORTCUT_SETTINGS = ["shortcut", "transcribeShortcut", "commandShortcut", "skillShortcut", "liveShortcut"] as const;
 const MAX_ALIASES = 50;
 
 function parseStopPhrases(value: unknown): string[] {
@@ -176,13 +180,13 @@ export function parseInput(value: unknown): InputConfig {
   const liveListenWhileSpeaking = input.liveListenWhileSpeaking ?? DEFAULTS.liveListenWhileSpeaking;
   if (typeof liveListenWhileSpeaking !== "boolean")
     fail("input.liveListenWhileSpeaking must be true or false");
-  const [shortcut, transcribeShortcut, commandShortcut, skillShortcut] = SHORTCUT_SETTINGS.map(
+  const [shortcut, transcribeShortcut, commandShortcut, skillShortcut, liveShortcut] = SHORTCUT_SETTINGS.map(
     (name) => parseShortcutKeys(input[name] ?? DEFAULTS[name], `input.${name}`),
-  ) as [string[], string[], string[], string[]];
+  ) as [string[], string[], string[], string[], string[]];
   const seen = new Set<string>();
-  for (const key of [...shortcut, ...transcribeShortcut, ...commandShortcut, ...skillShortcut]) {
+  for (const key of [...shortcut, ...transcribeShortcut, ...commandShortcut, ...skillShortcut, ...liveShortcut]) {
     if (seen.has(key.toLowerCase()))
-      fail(`input.shortcut, input.transcribeShortcut, input.commandShortcut and input.skillShortcut must be different keys; "${key}" is repeated`);
+      fail(`input.shortcut, input.transcribeShortcut, input.commandShortcut, input.skillShortcut and input.liveShortcut must be different keys; "${key}" is repeated`);
     seen.add(key.toLowerCase());
   }
   return {
@@ -201,6 +205,7 @@ export function parseInput(value: unknown): InputConfig {
     transcribeShortcut,
     commandShortcut,
     skillShortcut,
+    liveShortcut,
     sendWhenBusy,
     stopOnPhrase,
     stopPhrases: parseStopPhrases(input.stopPhrases ?? DEFAULTS.stopPhrases),
