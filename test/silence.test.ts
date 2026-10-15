@@ -29,10 +29,14 @@ async function load(config?: string) {
     if (config === undefined) throw new Error("no configuration file");
     return config;
   };
-  // SAFETY: The entry may use only registerCommand and on; anything else throws and fails the test.
+  // SAFETY: The entry may use only these members; anything else throws and fails the test. A tool is registered
+  // inactive, so the active set stays empty, and any `setActiveTools` call is recorded as use.
   const api = {
     registerCommand: (name: string) => commands.push(name),
     registerShortcut: (key: string) => shortcuts.push(key),
+    registerTool: () => undefined,
+    getActiveTools: () => [],
+    setActiveTools: () => used.push("setActiveTools"),
     on: (event: string, handler: (event?: unknown, ctx?: unknown) => void) => {
       events.set(event, handler);
       return () => undefined;
@@ -42,7 +46,7 @@ async function load(config?: string) {
   return { commands, shortcuts, events, used };
 }
 
-test("loading registers /speak, /talk, all four shortcuts, four cancel-only lifecycle handlers, and three compaction-state handlers, starting no process or request", async () => {
+test("loading registers /speak, /talk, all four shortcuts, four cancel-only lifecycle handlers, three compaction-state handlers, and the agent-run tool handler, starting no process or request and changing no active tool", async () => {
   const realFetch = globalThis.fetch;
   let globalFetches = 0;
   globalThis.fetch = (async () => {
@@ -54,6 +58,7 @@ test("loading registers /speak, /talk, all four shortcuts, four cancel-only life
     assert.deepEqual(commands, ["speak", "talk"]);
     assert.deepEqual(shortcuts, ["alt+t", "alt+shift+t", "alt+m", "alt+i"]);
     assert.deepEqual([...events.keys()].sort(), [
+      "before_agent_start",
       "session_before_compact",
       "session_before_fork",
       "session_before_switch",
@@ -97,7 +102,7 @@ test("a configuration that cannot be read at load registers the four default sho
   assert.deepEqual(shortcuts, DEFAULT_KEYS);
 });
 
-test("the extension subscribes to no agent, turn, tool, or message event, so ordinary activity cannot reach it", async () => {
+test("the extension subscribes to no agent, turn, tool, or message event except before_agent_start, whose handler only removes speak_aloud", async () => {
   const { events } = await load();
   for (const event of [
     "session_start",
@@ -108,7 +113,6 @@ test("the extension subscribes to no agent, turn, tool, or message event, so ord
     "message_end",
     "tool_call",
     "tool_result",
-    "before_agent_start",
   ])
     assert.ok(!events.has(event), event);
 });

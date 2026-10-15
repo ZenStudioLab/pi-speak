@@ -7,6 +7,7 @@ import { canonicalLocale, loadConfig, pushToTalkKeys, type Shortcuts } from "./c
 import { HoldSpace } from "./hold-space.ts";
 import { LiveSession } from "./live.ts";
 import { SELECTION_MESSAGES, selectSessionAnswer } from "./session.ts";
+import { SpeakAloudSwitch, registerSpeakAloud } from "./speak-aloud.ts";
 import { SpeechController, type SpeakDeps } from "./speech-job.ts";
 import { TalkController, type SendMessage } from "./talk.ts";
 import { normalizeExplicitText, prepareAnswerText } from "./text.ts";
@@ -36,7 +37,10 @@ async function handleSpeak(
   const word = (parts[0] ?? "").toLowerCase();
 
   if (word === "help" || word === "?") return controller.help(ui);
-  if (word === "stop") return controller.stop(ui);
+  if (word === "stop") {
+    live.dropWaitingUpdates();
+    return controller.stop(ui);
+  }
   if (word === "status") return controller.status(ui, () => live.phase);
   if (word === "quota") return controller.quota(ui);
   if (word === "provider") {
@@ -123,8 +127,9 @@ function speakLatestAnswer(
 }
 
 /**
- * Registers `/speak`, `/talk`, every push-to-talk shortcut, four lifecycle handlers that can
- * only cancel this extension's own work or end live mode, and three compaction handlers that only
+ * Registers `/speak`, `/talk`, every push-to-talk shortcut, the inactive `speak_aloud` tool, four
+ * lifecycle handlers that can only cancel this extension's own work or end live mode, a handler that
+ * keeps `speak_aloud` out of agent runs outside live mode, and three compaction handlers that only
  * note whether Pi is compacting. With `holdSpace`, it also subscribes the Space listener on each session start. Nothing
  * is read, spawned, or sent at registration.
  */
@@ -182,6 +187,7 @@ export function registerSpeak(
       handler: (ctx) => talk.press(ctx, "skill", true),
     });
 
+  registerSpeakAloud(pi, live);
   const reset = () => {
     controller.resetSession();
     talk.resetSession();
@@ -196,6 +202,11 @@ export function registerSpeak(
   pi.on("session_before_switch", reset);
   pi.on("session_before_fork", reset);
   pi.on("session_tree", reset);
+  // The only place besides live mode's own start and end that changes the active tools; it does so only when
+  // a host restored or activated the tool (design D3), never at load.
+  pi.on("before_agent_start", () => {
+    live.removeToolOutsideLive();
+  });
   // These only record the state; none returns a result, so compaction is never cancelled or changed.
   pi.on("session_before_compact", () => {
     talk.setCompacting(true);
@@ -236,7 +247,14 @@ export default async function speak(
   const controller = new SpeechController(deps, shortcuts);
   const sendMessage: SendMessage = (text, options) => pi.sendUserMessage(text, options);
   // `talk` is built after `live` and consulted only when the user runs `/talk live`.
-  const live = new LiveSession(deps, controller, sendMessage, shortcuts, (): string | undefined => talk.liveBlock());
+  const live = new LiveSession(
+    deps,
+    controller,
+    sendMessage,
+    shortcuts,
+    (): string | undefined => talk.liveBlock(),
+    new SpeakAloudSwitch(pi),
+  );
   const talk = new TalkController(deps, controller, sendMessage, shortcuts, () => pi.getCommands(), live);
   registerSpeak(
     pi,

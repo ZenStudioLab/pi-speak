@@ -2,11 +2,15 @@ import { resolveExecutable } from "./audio.ts";
 import { API_KEY_ENV, formatKeys, loadConfig, readProviderApiKey, type Shortcuts } from "./config.ts";
 import { redact } from "./elevenlabs.ts";
 import { systemClock, type HoldClock } from "./hold-space.ts";
+import { LiveSpeech } from "./live-speech.ts";
 import { nodeWebSocket, openRealtime, type RealtimeSession } from "./realtime.ts";
 import { RECORDER_TOOLS, findRecorder, startRecorder, type RecorderExit, type RecorderHandle } from "./record.ts";
+import type { SpeakAloudSwitch } from "./speak-aloud.ts";
 import type { SpeakDeps, SpeechController } from "./speech-job.ts";
+import { effectiveHardLimit } from "./speech-preflight.ts";
 import { TranscriptDelivery } from "./talk-delivery.ts";
 import type { SendMessage, TalkContext, TalkMode, TalkUi } from "./talk-state.ts";
+import { checkLength } from "./text.ts";
 
 const STATUS_KEY = "speak-live";
 /** How often the idle limit is checked; the limit is in minutes, so a coarse timer is enough (D9). */
@@ -31,6 +35,10 @@ interface On {
   context: Pick<TalkContext, "isIdle" | "model">;
   session: RealtimeSession;
   recorder: RecorderHandle;
+  /** Pi's spoken updates: the queue, and whether the microphone is muted. */
+  updates: LiveSpeech;
+  /** The most characters one update may have, fixed when live mode starts. */
+  speechLimit: number;
   /** How much of `session.text` has already become turns. */
   delivered: number;
   /** Turns are sent one after the other, in the order they were committed. */
@@ -53,6 +61,7 @@ export class LiveSession {
   private readonly delivery: TranscriptDelivery;
   private readonly shortcuts: Shortcuts;
   private readonly recordingBlock: () => string | undefined;
+  private readonly tools: Pick<SpeakAloudSwitch, "add" | "remove">;
   private readonly clock: Pick<HoldClock, "now" | "setTimer">;
   private state: Starting | On | undefined;
 
@@ -63,6 +72,8 @@ export class LiveSession {
     shortcuts: Shortcuts,
     /** Why a push-to-talk recording or transcription forbids live mode right now, or undefined. */
     recordingBlock: () => string | undefined,
+    /** Declares `speak_aloud` to the model only while live mode is on. */
+    tools: Pick<SpeakAloudSwitch, "add" | "remove">,
     clock: Pick<HoldClock, "now" | "setTimer"> = systemClock,
   ) {
     this.deps = deps;
@@ -72,6 +83,7 @@ export class LiveSession {
     this.delivery = new TranscriptDelivery(deps, sendMessage, () => [], (message) => this.redactKey(message));
     this.shortcuts = shortcuts;
     this.recordingBlock = recordingBlock;
+    this.tools = tools;
     this.clock = clock;
   }
 
@@ -96,10 +108,11 @@ export class LiveSession {
     await this.start(ctx);
   }
 
-  /** A push-to-talk key or `/talk` form while live mode is on or starting; only the send key, not `/talk send`, will cut Pi off. */
+  /** A push-to-talk key or `/talk` form while live mode is on or starting; only the send key, not `/talk send`, cuts Pi off. */
   press(ui: TalkUi, mode: TalkMode, fromShortcut: boolean): void {
-    if (mode === "send" && fromShortcut && this.state?.phase === "on") {
-      ui.notify("Nothing is being spoken.", "info");
+    const state = this.state;
+    if (mode === "send" && fromShortcut && state?.phase === "on") {
+      if (!state.updates.cutOff()) ui.notify("Nothing is being spoken.", "info");
       return;
     }
     ui.notify(
@@ -113,6 +126,34 @@ export class LiveSession {
     return this.state
       ? "/speak is unavailable during live mode. Run /talk live to end live mode first."
       : undefined;
+  }
+
+  /**
+   * The `speak_aloud` tool: queues Pi's text behind the updates already waiting and says why it will not be
+   * spoken. It never waits for synthesis or playback. Whether the text fits is decided against the limit read
+   * when live mode started; the speech job checks the limit again when the update starts.
+   */
+  speakAloud(text: string): string {
+    const on = this.state;
+    if (on?.phase !== "on") return "Nothing will be spoken: live mode is off.";
+    if (text.trim() === "") return "Nothing will be spoken: the text is empty.";
+    const length = checkLength(text, on.speechLimit);
+    if (!length.ok)
+      return `Nothing will be spoken: the text is ${length.length} characters and the speech limit is ${length.limit}. Shorten it and call again.`;
+    // Speaking is activity, so a short update between two idle checks still restarts the idle clock.
+    on.idleSince = this.clock.now();
+    on.updates.enqueue(text);
+    return "Queued: the update will be spoken in order.";
+  }
+
+  /** `/speak stop` while live mode is on also drops the updates that have not started. */
+  dropWaitingUpdates(): void {
+    if (this.state?.phase === "on") this.state.updates.dropWaiting();
+  }
+
+  /** An agent run is starting: a host that restored or activated `speak_aloud` must not declare it outside live mode. */
+  removeToolOutsideLive(): void {
+    if (!this.state) this.tools.remove();
   }
 
   /** Pi refuses a prompt while it compacts the conversation, so a turn must not be sent then. */
@@ -167,12 +208,15 @@ export class LiveSession {
     }
     if (!opened.ok) return refuse(this.redactKey(opened.failure.message));
     const session = opened.session;
+    const updates = new LiveSpeech(this.speech, ui, this.clock, () => this.render());
     // The recorder starts only once the connection is open, so no audio is lost while waiting for it.
+    // While Pi speaks, the same amount of silence takes the place of the microphone (D6), unless barge-in is on.
     const started = await startRecorder({
       retain: false,
       env: this.deps.env,
       spawnFn: this.deps.spawnFn,
-      onChunk: (chunk) => session.sendAudio(chunk),
+      onChunk: (chunk) =>
+        session.sendAudio(!input.liveListenWhileSpeaking && updates.muted ? Buffer.alloc(chunk.length) : chunk),
     });
     if (this.state !== claim) {
       if (started.ok) started.handle.stop();
@@ -190,6 +234,8 @@ export class LiveSession {
       context: ctx,
       session,
       recorder: started.handle,
+      updates,
+      speechLimit: effectiveHardLimit(loaded.config, "elevenlabs"),
       delivered: 0,
       sending: Promise.resolve(),
       idleLimitMs: input.liveIdleMinutes * 60_000,
@@ -200,16 +246,23 @@ export class LiveSession {
     session.listen({
       onCommitted: () => this.onCommitted(on),
       onFailure: (failure) => this.fail(on, `${this.redactKey(failure.message)} Live mode ended.`),
+      // Any partial transcript while Pi speaks is the user's voice (barge-in); with muting on none can arrive.
+      onPartial: input.liveListenWhileSpeaking ? () => this.cutOffByVoice(on) : undefined,
     });
     // A failure that arrived while the recorder was starting is reported by `listen` at once and has ended live mode.
     if (this.state !== on) return;
     void on.recorder.done.then((exit) => this.onRecorderExit(on, exit));
     this.scheduleIdleCheck(on);
-    this.render(on);
+    this.tools.add();
+    this.render();
     ui.notify(
       `Live mode is on. It uses ElevenLabs to listen and to speak, and the microphone streams to ElevenLabs until you end it. The spoken language is ${input.language ? `fixed to ${input.language}` : "detected for each turn"}. ${formatKeys(this.shortcuts.send)} cuts Pi off; /talk live ends live mode.`,
       "info",
     );
+  }
+
+  private cutOffByVoice(on: On): void {
+    if (this.state === on) on.updates.cutOff();
   }
 
   /** A committed segment is one turn: only its new words count, and text with no letter or digit is dropped. */
@@ -265,14 +318,14 @@ export class LiveSession {
   /** Counts only time in which the agent is idle, so long agent work never ends live mode. */
   private checkIdle(on: On): void {
     if (this.state !== on) return;
-    if (!on.context.isIdle()) on.idleSince = undefined;
+    if (!on.context.isIdle() || on.updates.busy) on.idleSince = undefined;
     else on.idleSince ??= this.clock.now();
     if (on.idleSince !== undefined && this.clock.now() - on.idleSince >= on.idleLimitMs)
       return this.end("Live mode ended because it was idle. The microphone is closed.");
     this.scheduleIdleCheck(on);
   }
 
-  /** Ends the attempt or session on every path: timer, recorder, connection, and status line. Idempotent. */
+  /** Ends the attempt or session on every path: timer, recorder, connection, Pi's speech, status line, and tool. Idempotent. */
   private end(message?: string, level: "info" | "error" = "info"): void {
     const state = this.state;
     if (!state) return;
@@ -282,16 +335,21 @@ export class LiveSession {
       state.stopIdleTimer();
       state.recorder.stop();
       state.session.close();
+      state.updates.end();
       this.clearStatus(state.ui);
     }
     if (message) state.ui.notify(message, level);
+    if (state.phase === "on") this.tools.remove();
   }
 
-  private render(on: On): void {
+  /** The status line: whether the microphone is listening or Pi is speaking, with the keys that matter. */
+  private render(): void {
+    const on = this.state;
+    if (on?.phase !== "on") return;
     try {
       on.ui.setStatus(
         STATUS_KEY,
-        `● Live — listening · ${formatKeys(this.shortcuts.send)} cuts Pi off · /talk live ends live mode`,
+        `● Live — ${on.updates.busy ? "Pi speaking" : "listening"} · ${formatKeys(this.shortcuts.send)} cuts Pi off · /talk live ends live mode`,
       );
     } catch {
       // The status line is cosmetic; a replaced session's UI may refuse updates.

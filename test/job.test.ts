@@ -648,3 +648,27 @@ test("a live update stopped during playback reports the exit and resolves", asyn
   assert.deepEqual(live.events, ["player started", "player exited"]);
   assert.deepEqual(live.notices, []);
 });
+
+test("a live hook that throws neither orphans the player nor skips the exit hook, and /speak stop still ends playback", async () => {
+  const h = await harness();
+  const live = liveHooks();
+  const hooks = {
+    ...live.hooks,
+    onPlayerStart: () => {
+      live.events.push("player started");
+      throw new Error("start hook failed");
+    },
+    onPlayerExit: () => {
+      live.events.push("player exited");
+      throw new Error("exit hook failed");
+    },
+  };
+  const done = h.controller.speakLive("Working on it.", hooks);
+  await h.until(() => h.children.length === 1);
+  await h.run("stop");
+  await done;
+  assert.deepEqual(h.children[0].signals, ["SIGTERM"]);
+  assert.deepEqual(live.events, ["player started", "player exited"]);
+  assert.deepEqual(live.notices, [], "a failing hook is not reported as a speech failure");
+  assert.match(h.messages(), /Stopped\./);
+});

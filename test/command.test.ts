@@ -597,7 +597,20 @@ test("help describes /talk live: ElevenLabs in both directions, what is sent, th
   assert.match(help, /uses ElevenLabs for listening and for speaking, whatever input\.provider and the speech provider say/);
   assert.match(help, /everything the microphone hears streams to ElevenLabs/);
   assert.match(help, /after input\.liveIdleMinutes \(default 5\) minutes of agent idleness/);
-  assert.match(help, /Push-to-talk keys, Space holds, and the \/speak forms that speak are refused/);
+  assert.match(help, /The transcribe-only, command, and skill keys, the \/talk forms, Space holds, and the \/speak forms that speak are refused while it is on\. The send key is not refused: while live mode is on it cuts Pi off\./);
+  quiet(h);
+});
+
+test("help describes Pi speaking in live mode: the cut-off key, /speak stop, the muted microphone, and input.liveListenWhileSpeaking with its headphones requirement", async () => {
+  const h = await harness({ shortcuts: { send: ["ctrl+alt+s", "ctrl+alt+d"] } });
+  await h.run("help");
+  const help = h.notices.at(-1)!.message;
+  const speaking = help.split("\n").find((line) => line.startsWith("Live mode, Pi speaking:"))!;
+  assert.ok(speaking, "a line about Pi speaking");
+  assert.match(speaking, /short updates .* in your ElevenLabs voice and in the language you last spoke/);
+  assert.match(speaking, /ctrl\+alt\+s \/ ctrl\+alt\+d or \/speak stop cuts Pi off: it stops the update being spoken and drops the waiting ones, and live mode stays on/);
+  assert.match(speaking, /muted while Pi speaks and for half a second after/);
+  assert.match(speaking, /input\.liveListenWhileSpeaking \(default off\) .* needs headphones or system echo cancellation/);
   quiet(h);
 });
 

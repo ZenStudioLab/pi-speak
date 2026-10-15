@@ -480,10 +480,19 @@ export class SpeechController {
       spawnFn: this.deps.spawnFn,
     });
     job.player = player;
-    job.liveHooks?.onPlayerStart();
+    this.signalLive(job, "onPlayerStart");
     const exit = await player.done;
-    job.liveHooks?.onPlayerExit();
+    this.signalLive(job, "onPlayerExit");
     if (exit.kind === "failed" && this.live(job))
       job.ui.notify(`Playback failed: ${exit.detail}`, "error");
+  }
+
+  /** A failing hook must neither orphan the tracked player nor skip the exit hook, which lifts the live mute. */
+  private signalLive(job: Job, hook: "onPlayerStart" | "onPlayerExit"): void {
+    try {
+      job.liveHooks?.[hook]();
+    } catch {
+      // Live bookkeeping only; the player keeps its normal stop path.
+    }
   }
 }

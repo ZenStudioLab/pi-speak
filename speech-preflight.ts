@@ -11,6 +11,10 @@ import {
 import type { SpeakDeps, SpeakUi } from "./speech-job.ts";
 import { checkLength } from "./text.ts";
 
+/** The most characters one speech request may carry: the configured limit, capped by the provider's own ceiling. */
+export const effectiveHardLimit = (config: SpeakConfig, provider: SpeechProvider): number =>
+  Math.min(config.hardLimitChars, PROVIDER_HARD_LIMIT_CEILINGS[provider]);
+
 /** What preflight reads of a job. */
 export interface PreflightJob {
   ui: SpeakUi;
@@ -43,10 +47,7 @@ export async function preflightSpeech(
     ...loaded.config,
     provider,
     locale: job.locale ?? loaded.config.locale,
-    hardLimitChars: Math.min(
-      loaded.config.hardLimitChars,
-      PROVIDER_HARD_LIMIT_CEILINGS[provider],
-    ),
+    hardLimitChars: effectiveHardLimit(loaded.config, provider),
   };
   if (text !== undefined) {
     const length = checkLength(text, config.hardLimitChars);

@@ -12,7 +12,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   SessionManager,
-  type ExtensionAPI,
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import type { SpawnFn } from "../audio.ts";
@@ -21,10 +20,12 @@ import { HoldSpace, type HoldClock } from "../hold-space.ts";
 import { registerSpeak } from "../index.ts";
 import { LiveSession } from "../live.ts";
 import type { RealtimeSocket } from "../realtime.ts";
+import { SpeakAloudSwitch } from "../speak-aloud.ts";
 import { SpeechController } from "../speech-job.ts";
 import { TalkController, type SendMessage } from "../talk.ts";
 import type { TranslationRegistry } from "../translation.ts";
 import type { TranslationFailureRecord } from "../translation-failure.ts";
+import { createFakePi } from "./fake-pi.ts";
 
 export const API_KEY = "test-secret-key-123";
 export const VALID_CONFIG = {
@@ -128,8 +129,6 @@ export interface CtxOptions {
   isIdle?: () => boolean;
 }
 
-type Handler = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
-
 export async function createHarness(
   options: {
     config?: unknown;
@@ -158,8 +157,10 @@ export async function createHarness(
     holdClock?: HoldClock;
     /** Leaves each live transcription socket unopened until the test calls `open`. */
     holdSockets?: boolean;
-    /** The time and timers of live mode's idle limit; the system clock when omitted. */
+    /** The time and timers of live mode's idle limit and mute tail; the system clock when omitted. */
     liveClock?: Pick<HoldClock, "now" | "setTimer">;
+    /** The tools that are active before the extension registers anything. */
+    activeTools?: string[];
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "speak-harness-"));
@@ -254,8 +255,17 @@ export async function createHarness(
     if (options.sendThrows) throw new Error(options.sendThrows);
     if (options.sendFailure) hostErrors.push(options.sendFailure);
   };
+  const host = createFakePi(options);
   // `talk` is built after `live` and consulted only when `/talk live` runs.
-  const live = new LiveSession(deps, controller, sendMessage, registered, (): string | undefined => talk.liveBlock(), options.liveClock);
+  const live = new LiveSession(
+    deps,
+    controller,
+    sendMessage,
+    registered,
+    (): string | undefined => talk.liveBlock(),
+    new SpeakAloudSwitch(host.api),
+    options.liveClock,
+  );
   const talk = new TalkController(
     { ...deps, now: () => clock },
     controller,
@@ -267,38 +277,9 @@ export async function createHarness(
     },
     live,
   );
-  const commands = new Map<string, Handler>();
-  const shortcuts = new Map<string, (ctx: ExtensionCommandContext) => Promise<void>>();
-  const events = new Map<string, (event?: unknown, ctx?: unknown) => void>();
-  const entries: { customType: string; data: TranslationFailureRecord }[] = [];
-  // SAFETY: registerSpeak uses registerCommand/on and appendEntry only after a live failure.
-  const api = {
-    appendEntry(customType: string, data: TranslationFailureRecord) {
-      if (options.entryFailure)
-        throw new Error("session persistence unavailable");
-      options.entrySink?.(customType, data);
-      entries.push({ customType, data });
-    },
-    registerCommand: (name: string, definition: { handler: Handler }) =>
-      commands.set(name, definition.handler),
-    registerShortcut: (
-      key: string,
-      definition: { handler: (ctx: ExtensionCommandContext) => Promise<void> },
-    ) => shortcuts.set(key, definition.handler),
-    sendUserMessage: () => {
-      submitted++;
-    },
-    sendMessage: () => {
-      submitted++;
-    },
-    on: (event: string, handler: (event?: unknown, ctx?: unknown) => void) => {
-      events.set(event, handler);
-      return () => undefined;
-    },
-  } as unknown as ExtensionAPI;
-  let submitted = 0;
+  const { commands, shortcuts, events, entries } = host;
   const hold = options.holdClock && new HoldSpace(talk, pushToTalkKeys(registered), options.holdClock);
-  registerSpeak(api, controller, talk, live, registered, hold);
+  registerSpeak(host.api, controller, talk, live, registered, hold);
 
   const notices: { message: string; level?: string }[] = [];
   const statuses: (string | undefined)[] = [];
@@ -422,6 +403,8 @@ export async function createHarness(
     widgets,
     events,
     entries,
+    /** The fake Pi host: registered tools, the active tool set, and the `setActiveTools` calls. */
+    host,
     run,
     runTalk,
     pressShortcut,
@@ -438,7 +421,7 @@ export async function createHarness(
     keyListeners,
     shortcuts,
     get submitted() {
-      return submitted + sent.length;
+      return host.submitted + sent.length;
     },
     advance(ms: number) {
       clock += ms;
