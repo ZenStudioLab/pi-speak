@@ -1,33 +1,28 @@
 import { randomUUID } from "node:crypto";
 import {
   startPlayer,
-  resolveExecutable,
   type PlayerHandle,
   type SpawnFn,
 } from "./audio.ts";
-import { AudioCache, cacheKey, clipExtension } from "./cache.ts";
+import { AudioCache } from "./cache.ts";
 import {
   API_KEY_ENV,
-  PROVIDER_HARD_LIMIT_CEILINGS,
   cacheDir,
   canonicalLocale,
-  describeConfig,
-  effectiveSpeechProvider,
   loadConfig,
-  readApiKey,
   readProviderApiKey,
   type Env,
   type Shortcuts,
   type SpeakConfig,
   type SpeechProvider,
 } from "./config.ts";
-import { synthesize as synthesizeDeepgram } from "./deepgram.ts";
-import { redact, synthesize as synthesizeElevenLabs } from "./elevenlabs.ts";
-import { fetchQuota } from "./quota.ts";
+import { redact } from "./elevenlabs.ts";
+import { QuotaLookup } from "./quota-lookup.ts";
 import { buildHelp } from "./help.ts";
-import { findRecorder } from "./record.ts";
 import type { WebSocketFn } from "./realtime.ts";
-import { NORMALIZER_VERSION, checkLength } from "./text.ts";
+import { clipFor, synthesizeClip, type Clip } from "./speech-clip.ts";
+import { preflightSpeech } from "./speech-preflight.ts";
+import { reportStatus } from "./speech-status.ts";
 import { Translator, type TranslationRegistry } from "./translation.ts";
 import {
   TranslationError,
@@ -51,6 +46,15 @@ export interface SpeakDeps {
   webSocketFn?: WebSocketFn;
 }
 
+/** What `speakLive` needs of the live session: where to show messages and when the player starts and exits. */
+export interface LiveSpeechHooks {
+  ui: SpeakUi;
+  /** The player has started; not called when the update ends before playback. */
+  onPlayerStart(): void;
+  /** The player has exited, however it ended; called once after `onPlayerStart`. */
+  onPlayerExit(): void;
+}
+
 type Phase = "preparing" | "translating" | "generating" | "playing";
 
 interface Job {
@@ -63,11 +67,8 @@ interface Job {
   player?: PlayerHandle;
   ui: SpeakUi;
   recordFailure?: (record: TranslationFailureRecord) => void;
-}
-
-interface Clip {
-  key: string;
-  extension: string;
+  /** Set only for live-mode updates. */
+  liveHooks?: LiveSpeechHooks;
 }
 
 const STATUS_KEY = "speak";
@@ -97,8 +98,7 @@ export class SpeechController {
   private job: Job | undefined;
   private lastClip: Clip | undefined;
   private task: Promise<void> = Promise.resolve();
-  private quotaRequest: AbortController | undefined;
-  private quotaTask: Promise<void> = Promise.resolve();
+  private readonly quotaLookup: QuotaLookup;
   private speechProviderOverride: SpeechProvider | undefined;
   private inputProviderOverride: SpeechProvider | undefined;
   private speechLocaleOverride: string | undefined;
@@ -108,6 +108,7 @@ export class SpeechController {
   constructor(deps: SpeakDeps, shortcuts: Shortcuts) {
     this.deps = deps;
     this.shortcuts = shortcuts;
+    this.quotaLookup = new QuotaLookup(deps);
   }
 
   /** The session-only voice-input provider, applied over the configured one. */
@@ -117,12 +118,25 @@ export class SpeechController {
 
   /** Resolves when the current speech and quota work have ended. */
   async whenIdle(): Promise<void> {
-    await Promise.all([this.task, this.quotaTask]);
+    await Promise.all([this.task, this.quotaLookup.whenDone()]);
   }
 
   speak(text: string, ui: SpeakUi): void {
     const job = this.begin(ui);
     if (job) this.task = this.run(job, () => this.generateAndPlay(job, text));
+  }
+
+  /**
+   * Speaks one live-mode update with ElevenLabs whatever the session or configured provider is,
+   * and without `speechBlock`, which refuses `/speak` while live mode is on. Otherwise it is
+   * `speak(text)`: same preflight, length limit, cache, player, and progress line. Resolves when
+   * the job has ended, including when it was cancelled before playback.
+   */
+  speakLive(text: string, hooks: LiveSpeechHooks): Promise<void> {
+    const job = this.begin(hooks.ui, undefined, undefined, hooks);
+    if (!job) return Promise.resolve();
+    this.task = this.run(job, () => this.generateAndPlay(job, text));
+    return this.task;
   }
 
   speakLocalized(
@@ -170,8 +184,7 @@ export class SpeechController {
     if (this.job) this.cancel(this.job);
     this.lastClip = undefined;
     this.translator.clear();
-    this.quotaRequest?.abort();
-    this.quotaRequest = undefined;
+    this.quotaLookup.cancel();
   }
 
   async provider(
@@ -226,81 +239,30 @@ export class SpeechController {
 
   /** Quota is independent of speech; do not block Pi's stop command while waiting. */
   quota(ui: SpeakUi): void {
-    if (this.quotaRequest) {
-      ui.notify("A quota lookup is already pending.", "info");
-      return;
-    }
-    const apiKey = readApiKey(this.deps.env);
-    if (!apiKey) {
-      ui.notify(
-        `${API_KEY_ENV} is not set. Quota was not requested.`,
-        "warning",
-      );
-      return;
-    }
-    const request = new AbortController();
-    this.quotaRequest = request;
-    ui.notify("Checking ElevenLabs quota...", "info");
-    this.quotaTask = fetchQuota(apiKey, this.deps.fetchFn, request.signal)
-      .then((result) => {
-        if (this.quotaRequest === request)
-          ui.notify(
-            redact(result.message, apiKey),
-            result.ok ? "info" : "error",
-          );
-      })
-      .catch(() => undefined) // A replaced UI must not create an unhandled rejection.
-      .finally(() => {
-        if (this.quotaRequest === request) this.quotaRequest = undefined;
-      });
+    this.quotaLookup.start(ui);
   }
 
-  async status(ui: SpeakUi): Promise<void> {
-    const loaded = await loadConfig(
-      this.deps.env,
-      this.deps.readFile,
-      this.deps.home,
+  status(ui: SpeakUi): Promise<void> {
+    return reportStatus(
+      this.deps,
+      {
+        speechProvider: this.speechProviderOverride,
+        inputProviderOverride: this.inputProviderOverride,
+        speechLocale: this.speechLocaleOverride,
+        jobPhase: this.job?.phase,
+      },
+      (config) => this.cacheFor(config),
+      ui,
     );
-    const lines: string[] = [];
-    if (loaded.ok) {
-      const recordingTool = (await findRecorder(this.deps.env))?.path;
-      lines.push(
-        ...describeConfig(
-          loaded.config,
-          {
-            elevenlabs: readProviderApiKey(this.deps.env, "elevenlabs") !== undefined,
-            deepgram: readProviderApiKey(this.deps.env, "deepgram") !== undefined,
-          },
-          {
-            speechProvider: this.speechProviderOverride,
-            inputProviderOverride: this.inputProviderOverride,
-            speechLocale: this.speechLocaleOverride,
-            recordingTool: recordingTool ? recordingTool : "not found",
-          },
-        ),
-      );
-      const cache = this.cacheFor(loaded.config);
-      try {
-        const stats = await cache.stats();
-        lines.push(
-          `cache: ${cache.root} (${stats.files} clips, ${stats.bytes} bytes)`,
-        );
-      } catch {
-        lines.push(`cache: ${cache.root} (unreadable)`);
-      }
-    } else {
-      lines.push(`not configured: ${loaded.problem}`);
-    }
-    lines.push(`job: ${this.job ? this.job.phase : "idle"}`);
-    ui.notify(lines.join("\n"), "info");
   }
 
   private begin(
     ui: SpeakUi,
     recordFailure?: (record: TranslationFailureRecord) => void,
     oneCommandLocale?: string,
+    liveHooks?: LiveSpeechHooks,
   ): Job | undefined {
-    const blocked = this.speechBlock?.();
+    const blocked = liveHooks ? undefined : this.speechBlock?.();
     if (blocked) {
       ui.notify(blocked, "warning");
       return undefined;
@@ -314,11 +276,12 @@ export class SpeechController {
     }
     const job: Job = {
       controller: new AbortController(),
-      speechProviderOverride: this.speechProviderOverride,
+      speechProviderOverride: liveHooks ? "elevenlabs" : this.speechProviderOverride,
       locale: oneCommandLocale ?? this.speechLocaleOverride,
       phase: "preparing",
       ui,
       recordFailure,
+      liveHooks,
     };
     this.job = job;
     this.show(job, "preparing");
@@ -417,102 +380,13 @@ export class SpeechController {
     });
   }
 
-  /** Config, then the length limit, then the player: every check runs before any billable request. */
-  private async preflight(
+  private preflight(
     job: Job,
     text?: string,
     generation = true,
     localized = false,
   ): Promise<SpeakConfig | undefined> {
-    const loaded = await loadConfig(
-      this.deps.env,
-      this.deps.readFile,
-      this.deps.home,
-    );
-    if (!this.live(job)) return undefined;
-    if (!loaded.ok) {
-      job.ui.notify(`Speech is not configured: ${loaded.problem}`, "warning");
-      return undefined;
-    }
-    const provider = effectiveSpeechProvider(loaded.config, job.speechProviderOverride);
-    const config: SpeakConfig = {
-      ...loaded.config,
-      provider,
-      locale: job.locale ?? loaded.config.locale,
-      hardLimitChars: Math.min(
-        loaded.config.hardLimitChars,
-        PROVIDER_HARD_LIMIT_CEILINGS[provider],
-      ),
-    };
-    if (text !== undefined) {
-      const length = checkLength(text, config.hardLimitChars);
-      if (!length.ok) {
-        job.ui.notify(
-          `That text is ${length.length} characters and the ${provider} limit is ${length.limit}. Nothing was sent. Use /speak text with a shorter passage.`,
-          "warning",
-        );
-        return undefined;
-      }
-    }
-    if (generation) {
-      const apiKey = readProviderApiKey(this.deps.env, provider);
-      if (localized && !apiKey) {
-        job.ui.notify(
-          `${provider === "elevenlabs" ? API_KEY_ENV : "DEEPGRAM_API_KEY"} is not set. Nothing was sent.`,
-          "warning",
-        );
-        return undefined;
-      }
-      if (
-        provider === "elevenlabs" &&
-        (!config.providers.elevenlabs.voiceId || !config.providers.elevenlabs.modelId)
-      ) {
-        job.ui.notify(
-          "ElevenLabs speech is not configured: set providers.elevenlabs.voiceId and providers.elevenlabs.modelId. Nothing was sent.",
-          "warning",
-        );
-        return undefined;
-      }
-      if (provider === "deepgram") {
-        const voice = config.providers.deepgram.voice;
-        if (
-          !voice ||
-          voice === "SET_YOUR_AUTHORIZED_VOICE_ID" ||
-          !/-[a-z]{2}$/i.test(voice)
-        ) {
-          job.ui.notify(
-            "Deepgram speech is not configured: set providers.deepgram.voice to an authorized voice ending in -<lang>. Nothing was sent.",
-            "warning",
-          );
-          return undefined;
-        }
-      }
-      if (localized && provider === "deepgram") {
-        const voice = config.providers.deepgram.voice!;
-        const voiceLanguage = voice.slice(voice.lastIndexOf("-") + 1).toLowerCase();
-        const localeLanguage = config.locale.split("-")[0]!.toLowerCase();
-        if (voiceLanguage !== localeLanguage) {
-          job.ui.notify(
-            `Deepgram voice language ${voiceLanguage} does not match locale ${config.locale} (primary language ${localeLanguage}). Use /speak original or another provider. Nothing was sent.`,
-            "warning",
-          );
-          return undefined;
-        }
-      }
-    }
-    const player = await resolveExecutable(
-      config.player.command,
-      this.deps.env,
-    );
-    if (!this.live(job)) return undefined;
-    if (!player) {
-      job.ui.notify(
-        `The audio player "${config.player.command}" was not found. Install it or set player.command in the configuration. Nothing was sent.`,
-        "warning",
-      );
-      return undefined;
-    }
-    return config;
+    return preflightSpeech(this.deps, { ...job, isCurrent: () => this.live(job) }, text, generation, localized);
   }
 
   private async generateAndPlay(
@@ -538,33 +412,7 @@ export class SpeechController {
       if (!this.live(job)) return;
     }
     const cache = this.cacheFor(config);
-    const clip: Clip = {
-      key: cacheKey({
-        text,
-        provider: config.provider,
-        voiceId:
-          config.provider === "elevenlabs"
-            ? config.providers.elevenlabs.voiceId ?? ""
-            : config.providers.deepgram.voice ?? "",
-        modelId:
-          config.provider === "elevenlabs"
-            ? config.providers.elevenlabs.modelId ?? ""
-            : "aura",
-        outputFormat:
-          config.provider === "elevenlabs"
-            ? config.providers.elevenlabs.outputFormat
-            : "mp3",
-        voiceRevision:
-          config.provider === "elevenlabs"
-            ? config.providers.elevenlabs.voiceRevision
-            : 0,
-        normalizerVersion: NORMALIZER_VERSION,
-        speechLocale: localized ? config.locale : "original",
-      }),
-      extension: config.provider === "elevenlabs"
-        ? clipExtension(config.providers.elevenlabs.outputFormat)
-        : "mp3",
-    };
+    const clip = clipFor(config, text, localized);
 
     let path = await cache.get(clip.key, clip.extension);
     if (!this.live(job)) return;
@@ -579,29 +427,7 @@ export class SpeechController {
       }
       job.phase = "generating";
       this.show(job, "generating");
-      const result = config.provider === "elevenlabs"
-        ? await synthesizeElevenLabs(
-            {
-              text,
-              voiceId: config.providers.elevenlabs.voiceId ?? "",
-              modelId: config.providers.elevenlabs.modelId ?? "",
-              outputFormat: config.providers.elevenlabs.outputFormat,
-              apiKey,
-              timeoutMs: config.requestTimeoutMs,
-              signal: job.controller.signal,
-            },
-            this.deps.fetchFn,
-          )
-        : await synthesizeDeepgram(
-            {
-              text,
-              voice: config.providers.deepgram.voice ?? "",
-              apiKey,
-              timeoutMs: config.requestTimeoutMs,
-              signal: job.controller.signal,
-            },
-            this.deps.fetchFn,
-          );
+      const result = await synthesizeClip(config, text, apiKey, job.controller.signal, this.deps.fetchFn);
       if (!this.live(job)) return;
       if (!result.ok) {
         if (result.kind !== "cancelled")
@@ -652,7 +478,9 @@ export class SpeechController {
       spawnFn: this.deps.spawnFn,
     });
     job.player = player;
+    job.liveHooks?.onPlayerStart();
     const exit = await player.done;
+    job.liveHooks?.onPlayerExit();
     if (exit.kind === "failed" && this.live(job))
       job.ui.notify(`Playback failed: ${exit.detail}`, "error");
   }

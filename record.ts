@@ -47,7 +47,7 @@ export const RECORDER_ARGS = {
 export const RECORDER_TOOLS = Object.keys(RECORDER_ARGS) as (keyof typeof RECORDER_ARGS)[];
 
 export type RecorderExit =
-  /** The controller asked for the stop, or the byte cap did; the audio is kept. */
+  /** The controller asked for the stop, or the byte cap did; the audio is kept. A streaming recorder keeps none, so `pcm` is empty. */
   | { kind: "stopped"; pcm: Buffer; capped: boolean }
   /** The recorder ended on its own, or a requested stop left no audio. */
   | { kind: "failed"; detail: string };
@@ -110,18 +110,21 @@ export function wavFromPcm(pcm: Uint8Array): Uint8Array<ArrayBuffer> {
   return wav;
 }
 
+/** Where the audio goes: kept in memory up to `maxSeconds` (push-to-talk), or only streamed to the callbacks with no cap (`retain: false`, live mode). */
+export type RecorderRetention = { retain?: true; maxSeconds: number } | { retain: false };
+
 /**
  * Starts the first available recorder without a shell and without either provider key in its
- * environment. Audio stays in memory and stops growing at `maxSeconds`, which also stops the
- * recorder.
+ * environment. By default audio stays in memory and stops growing at `maxSeconds`, which also
+ * stops the recorder. With `retain: false` chunks go only to `onLevel` and `onChunk`, nothing is
+ * buffered, and nothing stops the recorder but `stop()` or the recorder itself.
  */
-export async function startRecorder(options: {
+export async function startRecorder(options: RecorderRetention & {
   env: Env;
-  maxSeconds: number;
   spawnFn?: SpawnFn;
-  /** Called with the level of each chunk kept. */
+  /** Called with the level of each chunk. */
   onLevel?: (level: number) => void;
-  /** Called with each chunk kept, such as to stream it while recording. */
+  /** Called with each chunk, such as to stream it while recording. */
   onChunk?: (chunk: Buffer) => void;
   /** Called once when the length cap stops the recorder, before the recorder has exited. */
   onCapped?: () => void;
@@ -136,7 +139,8 @@ export async function startRecorder(options: {
     stdio: ["ignore", "pipe", "pipe"],
     env: childEnvironment(options.env),
   });
-  const capBytes = options.maxSeconds * BYTES_PER_SECOND;
+  /** Undefined for a streaming recorder (`retain: false`), which keeps no audio and has no cap. */
+  const capBytes = options.retain === false ? undefined : options.maxSeconds * BYTES_PER_SECOND;
   const chunks: Buffer[] = [];
   let total = 0;
   let capped = false;
@@ -160,7 +164,7 @@ export async function startRecorder(options: {
           detail: extra ? `${found.tool} ${why}: ${extra}` : `${found.tool} ${why}`,
         });
       }
-      if (total === 0)
+      if (capBytes !== undefined && total === 0)
         return resolve({ kind: "failed", detail: `${found.tool} recorded no audio` });
       resolve({ kind: "stopped", pcm: Buffer.concat(chunks), capped });
     };
@@ -184,6 +188,11 @@ export async function startRecorder(options: {
   };
 
   child.stdout?.on("data", (chunk: Buffer) => {
+    if (capBytes === undefined) {
+      options.onLevel?.(inputLevel(chunk));
+      options.onChunk?.(chunk);
+      return;
+    }
     const room = capBytes - total;
     if (room <= 0) return;
     const kept = chunk.length > room ? chunk.subarray(0, room) : chunk;

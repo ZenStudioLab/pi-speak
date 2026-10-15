@@ -57,6 +57,8 @@ export interface RealtimeHandlers {
   onCommitted(): void;
   /** The connection failed or closed while no final commit was awaited. */
   onFailure(failure: RealtimeFailure): void;
+  /** Live mode only: a non-empty partial transcript arrived. Partials are never added to `session.text`. */
+  onPartial?(text: string): void;
 }
 
 export interface RealtimeSession {
@@ -227,7 +229,12 @@ class Session implements RealtimeSession {
     const errorClass = Object.hasOwn(ERROR_CLASSES, type) ? ERROR_CLASSES[type] : undefined;
     if (errorClass)
       return this.fail(errorClass[0], `${errorClass[1]}. Nothing was retried.`);
-    // `partial_transcript` and every other message type are ignored.
+    if (type === "partial_transcript") {
+      if (typeof message.text === "string" && message.text.trim() !== "")
+        this.handlers?.onPartial?.(message.text.trim());
+      return;
+    }
+    // Every other message type is ignored.
     if (type !== "committed_transcript") return;
     if (typeof message.text !== "string")
       return this.fail("bad-response", "sent a transcript that is not text, so it was discarded.");

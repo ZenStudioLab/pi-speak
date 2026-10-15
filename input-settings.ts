@@ -26,6 +26,10 @@ export interface InputConfig {
   stopPhrases: string[];
   commandAliases: CommandAlias[];
   holdSpace: boolean;
+  /** Minutes of agent idleness after which live mode ends. */
+  liveIdleMinutes: number;
+  /** Keep sending microphone audio while Pi speaks, so speaking cuts Pi off. */
+  liveListenWhileSpeaking: boolean;
 }
 
 const DEFAULTS = {
@@ -39,6 +43,8 @@ const DEFAULTS = {
   stopOnPhrase: false,
   stopPhrases: ["let's go"],
   holdSpace: false,
+  liveIdleMinutes: 5,
+  liveListenWhileSpeaking: false,
 } as const;
 
 const INPUT_KEYS = [
@@ -54,6 +60,8 @@ const INPUT_KEYS = [
   "stopPhrases",
   "commandAliases",
   "holdSpace",
+  "liveIdleMinutes",
+  "liveListenWhileSpeaking",
 ];
 const SHORTCUT_SETTINGS = ["shortcut", "transcribeShortcut", "commandShortcut", "skillShortcut"] as const;
 const MAX_ALIASES = 50;
@@ -127,6 +135,9 @@ export function parseInput(value: unknown): InputConfig {
   if (typeof stopOnPhrase !== "boolean") fail("input.stopOnPhrase must be true or false");
   const holdSpace = input.holdSpace ?? DEFAULTS.holdSpace;
   if (typeof holdSpace !== "boolean") fail("input.holdSpace must be true or false");
+  const liveListenWhileSpeaking = input.liveListenWhileSpeaking ?? DEFAULTS.liveListenWhileSpeaking;
+  if (typeof liveListenWhileSpeaking !== "boolean")
+    fail("input.liveListenWhileSpeaking must be true or false");
   const [shortcut, transcribeShortcut, commandShortcut, skillShortcut] = SHORTCUT_SETTINGS.map(
     (name) => parseShortcutKeys(input[name] ?? DEFAULTS[name], `input.${name}`),
   ) as [string[], string[], string[], string[]];
@@ -157,5 +168,12 @@ export function parseInput(value: unknown): InputConfig {
     stopPhrases: parseStopPhrases(input.stopPhrases ?? DEFAULTS.stopPhrases),
     commandAliases: input.commandAliases === undefined ? [] : parseCommandAliases(input.commandAliases),
     holdSpace,
+    liveIdleMinutes: integerInRange(
+      input.liveIdleMinutes ?? DEFAULTS.liveIdleMinutes,
+      "input.liveIdleMinutes",
+      1,
+      60,
+    ),
+    liveListenWhileSpeaking,
   };
 }

@@ -546,3 +546,105 @@ test("status shows redacted configuration, key presence, job state, and cache us
   }
   assert.equal(h.fetchCalls.length, 1);
 });
+
+/** A live-update caller: its own UI and hooks, recording what the controller reports in order. */
+function liveHooks() {
+  const events: string[] = [];
+  const widgets: (string[] | undefined)[] = [];
+  const notices: string[] = [];
+  const hooks = {
+    ui: {
+      notify: (message: string) => notices.push(message),
+      setWidget: (_key: string, content: string[] | undefined) => widgets.push(content),
+    },
+    onPlayerStart: () => events.push("player started"),
+    onPlayerExit: () => events.push("player exited"),
+  };
+  return { hooks, events, widgets, notices };
+}
+
+test("a live update is synthesized with ElevenLabs even when Deepgram is configured and selected for the session", async () => {
+  const h = await harness({
+    config: { ...deepgramSpeechConfig, provider: "deepgram" },
+    deepgramKey: "deepgram-test-key",
+  });
+  await h.run("provider deepgram");
+  const live = liveHooks();
+  const done = h.controller.speakLive("Working on it.", live.hooks);
+  await h.until(() => h.children.length === 1);
+  h.children[0].finish(0);
+  await done;
+  assert.equal(h.fetchCalls.length, 1);
+  assert.match(h.fetchCalls[0].url, /^https:\/\/api\.elevenlabs\.io\/v1\/text-to-speech\/AbCdEf1234567890/);
+  assert.deepEqual(live.notices, []);
+  assert.deepEqual(live.widgets, [["Speech: Preparing..."], ["Speech: ElevenLabs..."], ["Speech: Playing..."], undefined]);
+  await h.run("provider");
+  assert.match(h.messages(), /speech provider: deepgram \(session override\)/, "the session override is untouched");
+});
+
+test("a speech block refuses /speak but not a live update", async () => {
+  const h = await harness();
+  h.controller.speechBlock = () => "The microphone is in use.";
+  await h.run("text hello");
+  assert.match(h.messages(), /The microphone is in use\./);
+  assert.equal(h.fetchCalls.length, 0);
+  const live = liveHooks();
+  const done = h.controller.speakLive("Working on it.", live.hooks);
+  await h.until(() => h.children.length === 1);
+  h.children[0].finish(0);
+  await done;
+  assert.equal(h.fetchCalls.length, 1);
+  assert.deepEqual(live.notices, []);
+});
+
+test("a live update reports the player start and exit in order and resolves only after the player exits", async () => {
+  const h = await harness();
+  const live = liveHooks();
+  let resolved = false;
+  const done = h.controller.speakLive("Working on it.", live.hooks).then(() => (resolved = true));
+  assert.deepEqual(live.events, []);
+  await h.until(() => h.children.length === 1);
+  assert.deepEqual(live.events, ["player started"]);
+  assert.equal(resolved, false);
+  h.children[0].finish(0);
+  await done;
+  assert.deepEqual(live.events, ["player started", "player exited"]);
+  assert.equal(h.statuses.at(-1), undefined);
+});
+
+test("a live update refuses text over the hard limit before any request, as /speak does", async () => {
+  const h = await harness({ config: { ...VALID_CONFIG, hardLimitChars: 10 } });
+  const live = liveHooks();
+  await h.controller.speakLive("x".repeat(11), live.hooks);
+  assert.match(live.notices.join("\n"), /That text is 11 characters and the elevenlabs limit is 10\. Nothing was sent/);
+  assert.equal(h.fetchCalls.length, 0);
+  assert.deepEqual(live.events, []);
+});
+
+test("a live update that is stopped before playback resolves without a player or hooks", async () => {
+  const h = await harness();
+  h.setFetch((call) =>
+    new Promise((_resolve, reject) =>
+      call.init.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
+    ),
+  );
+  const live = liveHooks();
+  const done = h.controller.speakLive("Working on it.", live.hooks);
+  await h.until(() => h.fetchCalls.length === 1);
+  await h.run("stop");
+  await done;
+  assert.deepEqual(live.events, []);
+  assert.equal(h.spawnCalls.length, 0);
+  assert.deepEqual(live.notices, []);
+});
+
+test("a live update stopped during playback reports the exit and resolves", async () => {
+  const h = await harness();
+  const live = liveHooks();
+  const done = h.controller.speakLive("Working on it.", live.hooks);
+  await h.until(() => h.children.length === 1);
+  await h.run("stop");
+  await done;
+  assert.deepEqual(live.events, ["player started", "player exited"]);
+  assert.deepEqual(live.notices, []);
+});

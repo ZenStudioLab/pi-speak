@@ -36,16 +36,18 @@ async function connect(options: Parameters<typeof start>[0] = {}) {
   return { opened: await opening, sockets, socket: sockets[0]! };
 }
 
-async function session(options: Parameters<typeof connect>[0] = {}) {
+async function session(options: Parameters<typeof connect>[0] = {}, withPartials = false) {
   const { opened, socket, sockets } = await connect(options);
   assert.ok(opened.ok);
   const events: string[] = [];
   const failures: RealtimeFailure[] = [];
+  const partials: string[] = [];
   opened.session.listen({
     onCommitted: () => events.push(opened.session.text),
     onFailure: (failure) => failures.push(failure),
+    ...(withPartials ? { onPartial: (text: string) => partials.push(text) } : {}),
   });
-  return { live: opened.session as RealtimeSession, socket, sockets, events, failures };
+  return { live: opened.session as RealtimeSession, socket, sockets, events, failures, partials };
 }
 
 test("the connection uses the fixed URL and query, and the key only in the xi-api-key header", async () => {
@@ -131,6 +133,28 @@ test("committed transcripts are joined with single spaces and partial transcript
   socket.committed("");
   assert.deepEqual(events, ["Hello there", "Hello there world", "Hello there world"]);
   assert.equal(live.text, "Hello there world");
+});
+
+test("a non-empty partial transcript reaches onPartial, trimmed, and never changes the committed text", async () => {
+  const { socket, partials, events, live } = await session({}, true);
+  socket.message({ message_type: "partial_transcript", text: "  hel " });
+  socket.message({ message_type: "partial_transcript", text: "" });
+  socket.message({ message_type: "partial_transcript", text: "   " });
+  socket.message({ message_type: "partial_transcript" });
+  assert.deepEqual(partials, ["hel"]);
+  assert.equal(live.text, "");
+  socket.committed("Hello");
+  socket.message({ message_type: "partial_transcript", text: "wor" });
+  assert.deepEqual(partials, ["hel", "wor"]);
+  assert.deepEqual(events, ["Hello"]);
+  assert.equal(live.text, "Hello");
+});
+
+test("a partial transcript over 64 KiB still ends the session as too large", async () => {
+  const { socket, partials, failures } = await session({}, true);
+  socket.message(JSON.stringify({ message_type: "partial_transcript", text: "a".repeat(64 * 1024) }));
+  assert.deepEqual(partials, []);
+  assert.deepEqual(failures.map((failure) => failure.kind), ["too-large"]);
 });
 
 test("the final commit sends an empty committed chunk, resolves with the next committed text, and is not announced as a segment", async () => {

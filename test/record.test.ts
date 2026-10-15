@@ -44,7 +44,7 @@ function fakeSpawn() {
   return { calls, children, spawnFn };
 }
 
-async function start(maxSeconds = 60, extra: Partial<Parameters<typeof startRecorder>[0]> = {}) {
+async function start(maxSeconds = 60, extra: { killGraceMs?: number; onLevel?: (level: number) => void } = {}) {
   const spawned = fakeSpawn();
   const result = await startRecorder({
     env: { PATH: await pathWith("rec") },
@@ -54,6 +54,22 @@ async function start(maxSeconds = 60, extra: Partial<Parameters<typeof startReco
   });
   assert.ok(result.ok);
   return { ...spawned, handle: result.handle, child: spawned.children[0]! };
+}
+
+/** A streaming recorder (`retain: false`) that reports its chunks and levels. */
+async function startStreaming() {
+  const spawned = fakeSpawn();
+  const chunks: Buffer[] = [];
+  const levels: number[] = [];
+  const result = await startRecorder({
+    env: { PATH: await pathWith("rec") },
+    retain: false,
+    spawnFn: spawned.spawnFn,
+    onChunk: (chunk) => chunks.push(chunk),
+    onLevel: (level) => levels.push(level),
+  });
+  assert.ok(result.ok);
+  return { ...spawned, handle: result.handle, child: spawned.children[0]!, chunks, levels };
 }
 
 const pcm = (bytes: number) => new Uint8Array(bytes).fill(1);
@@ -174,6 +190,39 @@ test("audio stops growing at maxSeconds, which stops the recorder and reports th
     assert.equal(exit.pcm.length, 32000);
     assert.equal(exit.capped, true);
   }
+});
+
+test("a streaming recorder has no cap, keeps no audio, and still reports every chunk and level", async () => {
+  const { child, handle, chunks, levels } = await startStreaming();
+  const seconds = 130; // more than the 120 s push-to-talk default cap
+  for (let i = 0; i < seconds; i++) child.emitAudio(pcm(BYTES_PER_SECOND));
+  assert.equal(chunks.length, seconds);
+  assert.equal(levels.length, seconds);
+  assert.deepEqual(child.signals, []);
+  handle.stop();
+  const exit = await handle.done;
+  assert.deepEqual(child.signals, ["SIGINT"]);
+  // Lengths, not buffers: a failing deepEqual on megabytes of audio makes Node's diff exhaust memory.
+  assert.equal(exit.kind, "stopped");
+  if (exit.kind === "stopped") {
+    assert.equal(exit.pcm.length, 0);
+    assert.equal(exit.capped, false);
+  }
+});
+
+test("a requested stop of a streaming recorder that heard nothing is still a stop, not a failure", async () => {
+  const { handle } = await startStreaming();
+  handle.stop();
+  assert.deepEqual(await handle.done, { kind: "stopped", pcm: Buffer.alloc(0), capped: false });
+});
+
+test("a streaming recorder that exits on its own is a failure", async () => {
+  const { child, handle } = await startStreaming();
+  child.emitAudio(pcm(3200));
+  child.finish(1);
+  const exit = await handle.done;
+  assert.equal(exit.kind, "failed");
+  if (exit.kind === "failed") assert.match(exit.detail, /exited on its own \(exit code 1\)/);
 });
 
 test("a recorder that ignores SIGINT is killed after the grace period", async () => {

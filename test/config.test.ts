@@ -281,6 +281,12 @@ for (const [name, input] of [
   ["a non-string stop phrase", { ...valid, input: { stopPhrases: [5] } }],
   ["a non-boolean holdSpace", { ...valid, input: { holdSpace: "yes" } }],
   ["a numeric holdSpace", { ...valid, input: { holdSpace: 1 } }],
+  ["a liveIdleMinutes of 0", { ...valid, input: { liveIdleMinutes: 0 } }],
+  ["a liveIdleMinutes of 61", { ...valid, input: { liveIdleMinutes: 61 } }],
+  ["a non-integer liveIdleMinutes", { ...valid, input: { liveIdleMinutes: 2.5 } }],
+  ["a string liveIdleMinutes", { ...valid, input: { liveIdleMinutes: "5" } }],
+  ["a non-boolean liveListenWhileSpeaking", { ...valid, input: { liveListenWhileSpeaking: "yes" } }],
+  ["a numeric liveListenWhileSpeaking", { ...valid, input: { liveListenWhileSpeaking: 1 } }],
   ["a command key equal to a send key", { ...valid, input: { commandShortcut: "alt+t" } }],
   ["a skill key equal to the command default", { ...valid, input: { skillShortcut: "alt+m" } }],
   ["a send key equal to the skill default", { ...valid, input: { shortcut: "alt+i" } }],
@@ -305,7 +311,7 @@ for (const [name, input] of [
   test(`rejects ${name} input setting`, () => {
     const result = parseConfig(input);
     assert.ok(!result.ok);
-    assert.match(result.problem, /input\.(maxSeconds|language|sendWhenBusy|transcribeShortcut|shortcut|stopOnPhrase|stopPhrases|commandShortcut|skillShortcut|commandAliases|holdSpace)/);
+    assert.match(result.problem, /input\.(maxSeconds|language|sendWhenBusy|transcribeShortcut|shortcut|stopOnPhrase|stopPhrases|commandShortcut|skillShortcut|commandAliases|holdSpace|liveIdleMinutes|liveListenWhileSpeaking)/);
   });
 }
 
@@ -336,6 +342,27 @@ test("the command and skill keys, aliases and holdSpace default to alt+m, alt+i,
   assert.deepEqual(result.config.input.commandAliases, []);
   assert.equal(result.config.input.holdSpace, false);
 });
+
+test("the live settings default to 5 minutes and off", () => {
+  const result = parseConfig(valid);
+  assert.ok(result.ok);
+  assert.equal(result.config.input.liveIdleMinutes, 5);
+  assert.equal(result.config.input.liveListenWhileSpeaking, false);
+});
+
+test("an unknown input key is still rejected beside the live settings", () => {
+  const result = parseConfig({ ...valid, input: { liveIdleMinutes: 5, liveIdle: 5 } });
+  assert.ok(!result.ok);
+  assert.match(result.problem, /input contains unknown key\(s\): liveIdle$/);
+});
+
+for (const minutes of [1, 60])
+  test(`liveIdleMinutes accepts the bound ${minutes} and liveListenWhileSpeaking accepts true`, () => {
+    const result = parseConfig({ ...valid, input: { liveIdleMinutes: minutes, liveListenWhileSpeaking: true } });
+    assert.ok(result.ok);
+    assert.equal(result.config.input.liveIdleMinutes, minutes);
+    assert.equal(result.config.input.liveListenWhileSpeaking, true);
+  });
 
 test("the command and skill keys, aliases and holdSpace are read, with phrases trimmed and at the limits", () => {
   const limit = { ["x".repeat(40)]: "/a", " a b c d e f g h ": `/${"y".repeat(199)}`, "Mô hình": "/model", ...aliasesOf(47) };
