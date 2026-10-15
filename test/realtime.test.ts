@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  matchesLiveStopPhrase,
   matchStopPhrase,
   openRealtime,
   realtimeUrl,
@@ -383,4 +384,28 @@ const MATCHES: [string, string, string[], string | undefined][] = [
 for (const [name, text, phrases, expected] of MATCHES)
   test(`stop phrase matching: ${name}`, () => {
     assert.equal(matchStopPhrase(text, phrases), expected);
+  });
+
+const LIVE_PHRASES = ["Dừng cuộc hội thoại", "Stop the conversation"];
+const LIVE_MATCHES: [string, string, readonly string[], boolean][] = [
+  ["the whole turn in any case with punctuation", "  STOP the conversation!  ", LIVE_PHRASES, true],
+  ["a Vietnamese phrase without its diacritics", "dung cuoc hoi thoai", LIVE_PHRASES, true],
+  ["a Vietnamese phrase with a wrong tone mark", "Dừng cuộc hội thoai.", LIVE_PHRASES, true],
+  ["a transcript with d against a phrase with đ", "DI thoi", ["đi thôi"], true],
+  ["a transcript with Đ against a phrase with d", "Đi thôi", ["di thoi"], true],
+  ["a decomposed transcript", "Dừng cuộc hội thoại".normalize("NFD"), LIVE_PHRASES, true],
+  ["a phrase configured without diacritics", "Dừng cuộc hội thoại", ["dung cuoc hoi thoai"], true],
+  ["a curly apostrophe", "let’s stop", ["let's stop"], true],
+  ["a phrase with other words before it", "Okay, stop the conversation", LIVE_PHRASES, false],
+  ["a phrase with other words after it", "stop the conversation about tests", LIVE_PHRASES, false],
+  ["a part of the phrase", "stop the", LIVE_PHRASES, false],
+  ["the phrase twice", "stop the conversation stop the conversation", LIVE_PHRASES, false],
+  ["a different word", "stop the conversations", LIVE_PHRASES, false],
+  ["empty text", "", LIVE_PHRASES, false],
+  ["no phrases", "stop the conversation", [], false],
+  ["a phrase with no word", "...", ["..."], false],
+];
+for (const [name, text, phrases, expected] of LIVE_MATCHES)
+  test(`live stop phrase matching: ${name}`, () => {
+    assert.equal(matchesLiveStopPhrase(text, phrases), expected);
   });

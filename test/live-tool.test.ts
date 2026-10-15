@@ -78,6 +78,19 @@ test("a failure while the recorder is starting never leaves the tool active", as
   assert.deepEqual(h.host.activeTools, OTHER_TOOLS);
 });
 
+test("an agent run removes a restored tool while live mode is still starting, and keeps it once live mode is on", async () => {
+  const h = await harness({ activeTools: [...OTHER_TOOLS, "speak_aloud"], holdSockets: true });
+  const starting = h.runTalk("live");
+  await h.until(() => h.sockets.length === 1);
+  beforeAgentStart(h);
+  assert.deepEqual(h.host.activeTools, OTHER_TOOLS, "starting is not live mode");
+  h.sockets[0]!.emit("open");
+  await starting;
+  assert.deepEqual(h.host.activeTools, [...OTHER_TOOLS, "speak_aloud"], "live start adds it");
+  beforeAgentStart(h);
+  assert.deepEqual(h.host.activeTools, [...OTHER_TOOLS, "speak_aloud"], "a run during live mode keeps it");
+});
+
 test("the tool says why nothing will be spoken when live mode is off, the text is empty, or it is too long", async () => {
   const h = await harness({ config: baseConfig({}) });
   assert.match(await speakAloud(h, "Đang kiểm tra."), /live mode is off/);

@@ -287,6 +287,12 @@ for (const [name, input] of [
   ["a string liveIdleMinutes", { ...valid, input: { liveIdleMinutes: "5" } }],
   ["a non-boolean liveListenWhileSpeaking", { ...valid, input: { liveListenWhileSpeaking: "yes" } }],
   ["a numeric liveListenWhileSpeaking", { ...valid, input: { liveListenWhileSpeaking: 1 } }],
+  ["liveStopPhrases that is not a list", { ...valid, input: { liveStopPhrases: "stop" } }],
+  ["more than 10 liveStopPhrases", { ...valid, input: { liveStopPhrases: Array.from({ length: 11 }, (_, i) => `phrase ${i}`) } }],
+  ["an empty live stop phrase", { ...valid, input: { liveStopPhrases: [""] } }],
+  ["a live stop phrase over 40 characters", { ...valid, input: { liveStopPhrases: ["x".repeat(41)] } }],
+  ["a live stop phrase with no letter or digit", { ...valid, input: { liveStopPhrases: ["stop", "..."] } }],
+  ["a non-string live stop phrase", { ...valid, input: { liveStopPhrases: [5] } }],
   ["a command key equal to a send key", { ...valid, input: { commandShortcut: "alt+t" } }],
   ["a skill key equal to the command default", { ...valid, input: { skillShortcut: "alt+m" } }],
   ["a send key equal to the skill default", { ...valid, input: { shortcut: "alt+i" } }],
@@ -311,7 +317,7 @@ for (const [name, input] of [
   test(`rejects ${name} input setting`, () => {
     const result = parseConfig(input);
     assert.ok(!result.ok);
-    assert.match(result.problem, /input\.(maxSeconds|language|sendWhenBusy|transcribeShortcut|shortcut|stopOnPhrase|stopPhrases|commandShortcut|skillShortcut|commandAliases|holdSpace|liveIdleMinutes|liveListenWhileSpeaking)/);
+    assert.match(result.problem, /input\.(maxSeconds|language|sendWhenBusy|transcribeShortcut|shortcut|stopOnPhrase|stopPhrases|commandShortcut|skillShortcut|commandAliases|holdSpace|liveIdleMinutes|liveListenWhileSpeaking|liveStopPhrases)/);
   });
 }
 
@@ -349,6 +355,24 @@ test("the live settings default to 5 minutes and off", () => {
   assert.equal(result.config.input.liveIdleMinutes, 5);
   assert.equal(result.config.input.liveListenWhileSpeaking, false);
 });
+
+test("liveStopPhrases defaults to the Vietnamese and English pair, separate from stopPhrases", () => {
+  const result = parseConfig(valid);
+  assert.ok(result.ok);
+  assert.deepEqual(result.config.input.liveStopPhrases, ["Dừng cuộc hội thoại", "Stop the conversation"]);
+  assert.deepEqual(result.config.input.stopPhrases, ["let's go"]);
+});
+
+for (const [name, phrases, expected] of [
+  ["an empty list, which turns the feature off", [], []],
+  ["ten phrases", Array.from({ length: 10 }, (_, i) => `phrase ${i}`), Array.from({ length: 10 }, (_, i) => `phrase ${i}`)],
+  ["phrases trimmed and at 1 and 40 characters", ["  x ", `${"y".repeat(39)}1`], ["x", `${"y".repeat(39)}1`]],
+] as const)
+  test(`liveStopPhrases accepts ${name}`, () => {
+    const result = parseConfig({ ...valid, input: { liveStopPhrases: phrases } });
+    assert.ok(result.ok);
+    assert.deepEqual(result.config.input.liveStopPhrases, expected);
+  });
 
 test("an unknown input key is still rejected beside the live settings", () => {
   const result = parseConfig({ ...valid, input: { liveIdleMinutes: 5, liveIdle: 5 } });

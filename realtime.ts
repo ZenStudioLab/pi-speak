@@ -341,3 +341,17 @@ export function matchStopPhrase(text: string, phrases: readonly string[]): strin
     ? undefined
     : text.slice(0, spoken[start]!.start).replace(/[\s\p{P}]+$/u, "");
 }
+
+const foldDiacritics = (word: string) => word.normalize("NFD").replace(/\p{M}/gu, "").replace(/đ/g, "d");
+
+/**
+ * Whether the whole text equals one of the phrases, word by word. Words are compared as `matchStopPhrase`
+ * compares them, and diacritics are ignored too, `đ` counting as `d`: a transcript often gets a tone mark wrong.
+ */
+export function matchesLiveStopPhrase(text: string, phrases: readonly string[]): boolean {
+  const spoken = spokenWords(text).map(({ word }) => foldDiacritics(word));
+  return phrases.some((phrase) => {
+    const wanted = spokenWords(phrase).map(({ word }) => foldDiacritics(word));
+    return wanted.length > 0 && wanted.length === spoken.length && wanted.every((word, i) => word === spoken[i]);
+  });
+}

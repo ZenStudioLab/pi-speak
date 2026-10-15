@@ -30,6 +30,8 @@ export interface InputConfig {
   liveIdleMinutes: number;
   /** Keep sending microphone audio while Pi speaks, so speaking cuts Pi off. */
   liveListenWhileSpeaking: boolean;
+  /** Whole-turn phrases that end live mode when said; empty turns the feature off. */
+  liveStopPhrases: string[];
 }
 
 const DEFAULTS = {
@@ -45,6 +47,7 @@ const DEFAULTS = {
   holdSpace: false,
   liveIdleMinutes: 5,
   liveListenWhileSpeaking: false,
+  liveStopPhrases: ["Dừng cuộc hội thoại", "Stop the conversation"],
 } as const;
 
 const INPUT_KEYS = [
@@ -62,6 +65,7 @@ const INPUT_KEYS = [
   "holdSpace",
   "liveIdleMinutes",
   "liveListenWhileSpeaking",
+  "liveStopPhrases",
 ];
 const SHORTCUT_SETTINGS = ["shortcut", "transcribeShortcut", "commandShortcut", "skillShortcut"] as const;
 const MAX_ALIASES = 50;
@@ -73,6 +77,18 @@ function parseStopPhrases(value: unknown): string[] {
     const trimmed = typeof phrase === "string" ? phrase.trim() : "";
     if (trimmed.length < 1 || trimmed.length > 40)
       fail("input.stopPhrases entries must be strings of 1 to 40 characters");
+    return trimmed;
+  });
+}
+
+/** 0 to 10 phrases that can match a turn, so each needs a letter or digit; an empty list turns the feature off. */
+function parseLiveStopPhrases(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 10)
+    fail("input.liveStopPhrases must be a list of 0 to 10 phrases");
+  return value.map((phrase) => {
+    const trimmed = typeof phrase === "string" ? phrase.trim() : "";
+    if (trimmed.length < 1 || trimmed.length > 40 || !/[\p{L}\p{N}]/u.test(trimmed))
+      fail("input.liveStopPhrases entries must be strings of 1 to 40 characters with at least one letter or digit");
     return trimmed;
   });
 }
@@ -175,5 +191,6 @@ export function parseInput(value: unknown): InputConfig {
       60,
     ),
     liveListenWhileSpeaking,
+    liveStopPhrases: parseLiveStopPhrases(input.liveStopPhrases ?? DEFAULTS.liveStopPhrases),
   };
 }

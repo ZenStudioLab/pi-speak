@@ -601,6 +601,31 @@ test("help describes /talk live: ElevenLabs in both directions, what is sent, th
   quiet(h);
 });
 
+test("help describes the live stop phrase: the defaults, the whole-turn rule, and that it is not heard while Pi speaks", async () => {
+  const h = await harness();
+  await h.run("help");
+  const help = h.notices.at(-1)!.message;
+  assert.match(help, /^Live stop phrase: "Dừng cuộc hội thoại", "Stop the conversation"$/m);
+  const rule = help.split("\n").find((line) => line.startsWith("Live stop phrase (input.liveStopPhrases"))!;
+  assert.ok(rule, "a line about the setting");
+  assert.match(rule, /default "Dừng cuộc hội thoại" and "Stop the conversation"; \[\] turns it off/);
+  assert.match(rule, /say one as a whole turn.*a longer sentence that contains the phrase is sent to Pi as usual/);
+  assert.match(rule, /While input\.liveListenWhileSpeaking is off the microphone is muted as Pi speaks, so the phrase is not heard then/);
+  quiet(h);
+});
+
+for (const [name, input, line] of [
+  ["the configured phrases", { liveStopPhrases: ["Dừng lại", "end it"] }, /^Live stop phrase: "Dừng lại", "end it"$/m],
+  ["off for an empty list", { liveStopPhrases: [] }, /^Live stop phrase: off$/m],
+  ["unknown when the configuration cannot be read", { liveStopPhrases: "stop" }, /^Live stop phrase: unknown$/m],
+] as const)
+  test(`help shows the live stop phrase as ${name}`, async () => {
+    const h = await harness({ config: { ...VALID_CONFIG, input } });
+    await h.run("help");
+    assert.match(h.notices.at(-1)!.message, line);
+    quiet(h);
+  });
+
 test("help describes Pi speaking in live mode: the cut-off key, /speak stop, the muted microphone, and input.liveListenWhileSpeaking with its headphones requirement", async () => {
   const h = await harness({ shortcuts: { send: ["ctrl+alt+s", "ctrl+alt+d"] } });
   await h.run("help");

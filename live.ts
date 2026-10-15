@@ -3,7 +3,7 @@ import { API_KEY_ENV, formatKeys, loadConfig, readProviderApiKey, type Shortcuts
 import { redact } from "./elevenlabs.ts";
 import { systemClock, type HoldClock } from "./hold-space.ts";
 import { LiveSpeech } from "./live-speech.ts";
-import { nodeWebSocket, openRealtime, type RealtimeSession } from "./realtime.ts";
+import { matchesLiveStopPhrase, nodeWebSocket, openRealtime, type RealtimeSession } from "./realtime.ts";
 import { RECORDER_TOOLS, findRecorder, startRecorder, type RecorderExit, type RecorderHandle } from "./record.ts";
 import type { SpeakAloudSwitch } from "./speak-aloud.ts";
 import type { SpeakDeps, SpeechController } from "./speech-job.ts";
@@ -43,6 +43,8 @@ interface On {
   delivered: number;
   /** Turns are sent one after the other, in the order they were committed. */
   sending: Promise<void>;
+  /** The live stop phrases, read when live mode started. */
+  stopPhrases: string[];
   idleLimitMs: number;
   /** When the current stretch of agent idleness began; undefined while the agent works. */
   idleSince: number | undefined;
@@ -153,7 +155,7 @@ export class LiveSession {
 
   /** An agent run is starting: a host that restored or activated `speak_aloud` must not declare it outside live mode. */
   removeToolOutsideLive(): void {
-    if (!this.state) this.tools.remove();
+    if (this.state?.phase !== "on") this.tools.remove();
   }
 
   /** Pi refuses a prompt while it compacts the conversation, so a turn must not be sent then. */
@@ -238,6 +240,7 @@ export class LiveSession {
       speechLimit: effectiveHardLimit(loaded.config, "elevenlabs"),
       delivered: 0,
       sending: Promise.resolve(),
+      stopPhrases: input.liveStopPhrases,
       idleLimitMs: input.liveIdleMinutes * 60_000,
       idleSince: this.clock.now(),
       stopIdleTimer: () => undefined,
@@ -265,12 +268,22 @@ export class LiveSession {
     if (this.state === on) on.updates.cutOff();
   }
 
-  /** A committed segment is one turn: only its new words count, and text with no letter or digit is dropped. */
+  /**
+   * A committed segment is one turn: only its new words count. A turn that is a live stop phrase is never sent
+   * and ends live mode behind the turns still waiting; text with no letter or digit is dropped.
+   */
   private onCommitted(on: On): void {
     if (this.state !== on) return;
     const text = on.session.text;
     const turn = text.slice(on.delivered).trim();
     on.delivered = text.length;
+    if (matchesLiveStopPhrase(turn, on.stopPhrases)) {
+      // Behind the turns already waiting; the turns after it find live mode ended and are dropped.
+      on.sending = on.sending.then(() => {
+        if (this.state === on) this.end("Live mode ended because you said the stop phrase. The microphone is closed.");
+      });
+      return;
+    }
     if (!HAS_WORDS.test(turn)) return;
     on.sending = on.sending.then(() => this.send(on, turn));
   }
@@ -346,10 +359,11 @@ export class LiveSession {
   private render(): void {
     const on = this.state;
     if (on?.phase !== "on") return;
+    const stopPhrase = on.stopPhrases[0] ? ` · or say "${on.stopPhrases[0]}"` : "";
     try {
       on.ui.setStatus(
         STATUS_KEY,
-        `● Live — ${on.updates.busy ? "Pi speaking" : "listening"} · ${formatKeys(this.shortcuts.send)} cuts Pi off · /talk live ends live mode`,
+        `● Live — ${on.updates.busy ? "Pi speaking" : "listening"} · ${formatKeys(this.shortcuts.send)} cuts Pi off · /talk live ends live mode${stopPhrase}`,
       );
     } catch {
       // The status line is cosmetic; a replaced session's UI may refuse updates.

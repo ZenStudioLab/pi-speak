@@ -16,9 +16,11 @@ export async function buildHelp(
   if (sessionLocale) locale = `${sessionLocale} (session override)`;
   else locale = loaded.ok ? `${loaded.config.locale} (configured)` : "unknown";
   let stopPhrase = "unknown";
+  let liveStopPhrase = "unknown";
   if (loaded.ok) {
-    const { stopOnPhrase, stopPhrases } = loaded.config.input;
+    const { stopOnPhrase, stopPhrases, liveStopPhrases } = loaded.config.input;
     stopPhrase = `${stopOnPhrase ? "on" : "off"} (${stopPhrases.map((phrase) => `"${phrase}"`).join(", ")})`;
+    liveStopPhrase = liveStopPhrases.length > 0 ? liveStopPhrases.map((phrase) => `"${phrase}"`).join(", ") : "off";
   }
   const lines = [
     "Speak and voice input",
@@ -54,6 +56,8 @@ export async function buildHelp(
       : []),
     "Live mode (/talk live): it uses ElevenLabs for listening and for speaking, whatever input.provider and the speech provider say. While it is on, everything the microphone hears streams to ElevenLabs and each pause sends one plain message to Pi (slash commands in it do not run; a draft in the composer is left alone). It ends on /talk live again, on an error, or after input.liveIdleMinutes (default 5) minutes of agent idleness. The transcribe-only, command, and skill keys, the /talk forms, Space holds, and the /speak forms that speak are refused while it is on. The send key is not refused: while live mode is on it cuts Pi off.",
     `Live mode, Pi speaking: Pi says short updates (an acknowledgement, progress, a summary) in your ElevenLabs voice and in the language you last spoke. ${formatKeys(send)} or /speak stop cuts Pi off: it stops the update being spoken and drops the waiting ones, and live mode stays on. The microphone is muted while Pi speaks and for half a second after. input.liveListenWhileSpeaking (default off) keeps it open, so that speaking cuts Pi off; it needs headphones or system echo cancellation, because otherwise Pi's own voice can cut it off or be sent as a turn.`,
+    `Live stop phrase: ${liveStopPhrase}`,
+    'Live stop phrase (input.liveStopPhrases, default "Dừng cuộc hội thoại" and "Stop the conversation"; [] turns it off): say one as a whole turn, with nothing else before the pause, to end live mode. Case, punctuation, and accents do not matter, so "dung cuoc hoi thoai" matches too; a longer sentence that contains the phrase is sent to Pi as usual. Nothing is sent to Pi for the phrase, and the agent keeps working. While input.liveListenWhileSpeaking is off the microphone is muted as Pi speaks, so the phrase is not heard then: cut Pi off with the send key first, or wait. These phrases are separate from input.stopPhrases.',
     `Speech locale: ${locale}`,
     `Stop phrase: ${stopPhrase}`,
     "Stop phrase (input.stopOnPhrase, ElevenLabs only): say a phrase from input.stopPhrases as the last words before a pause of about 1 second to stop and send. While on, audio streams to ElevenLabs as you speak; Escape sends nothing but cannot recall audio already sent. A key or /talk still stops the recording and decides whether the text is sent.",

@@ -17,7 +17,7 @@ const liveOn = async (h: Harness) => {
 test("/talk live starts live mode and a second /talk live ends it and closes the microphone", async () => {
   const h = await harness();
   const { child, socket } = await startLive(h);
-  assert.match(h.liveStatuses.at(-1)!, /^● Live — listening · alt\+t cuts Pi off · \/talk live ends live mode$/);
+  assert.match(h.liveStatuses.at(-1)!, /^● Live — listening · alt\+t cuts Pi off · \/talk live ends live mode · or say "Dừng cuộc hội thoại"$/);
   assert.equal(await liveOn(h), true);
   await h.runTalk("live");
   assert.deepEqual(child.signals, ["SIGINT"]);

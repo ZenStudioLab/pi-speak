@@ -7,7 +7,7 @@ import { audio, baseConfig, sessionEvent, useTalkHarness, type Harness } from ".
 
 const harness = useTalkHarness();
 const OTHER_TOOLS = ["read", "bash"];
-const KEY_LINE = "alt+t cuts Pi off · /talk live ends live mode";
+const KEY_LINE = 'alt+t cuts Pi off · /talk live ends live mode · or say "Dừng cuộc hội thoại"';
 
 /** Live mode with an update playing and a second one waiting behind it. */
 async function playingWithOneWaiting(h: Harness) {
