@@ -15,6 +15,7 @@ import {
   type RealtimeSession,
 } from "./realtime.ts";
 import { startRecorder, wavFromPcm, type RecorderExit } from "./record.ts";
+import type { LiveSession } from "./live.ts";
 import type { SpeakDeps, SpeechController } from "./speech-job.ts";
 import { TranscriptDelivery, type ListCommands } from "./talk-delivery.ts";
 import type {
@@ -46,6 +47,7 @@ export class TalkController {
   private readonly speech: SpeechController;
   private readonly delivery: TranscriptDelivery;
   private readonly shortcuts: Shortcuts;
+  private readonly live: LiveSession;
   private active: Starting | Recording | undefined;
 
   constructor(
@@ -54,25 +56,36 @@ export class TalkController {
     sendMessage: SendMessage,
     shortcuts: Shortcuts,
     listCommands: ListCommands,
+    live: LiveSession,
   ) {
     this.deps = deps;
     this.speech = speech;
+    this.live = live;
     this.delivery = new TranscriptDelivery(deps, sendMessage, listCommands, (message) =>
       this.redactKeys(message),
     );
     this.shortcuts = shortcuts;
     speech.speechBlock = () =>
-      this.active && this.active.phase !== "transcribing"
+      live.speechBlock() ??
+      (this.active && this.active.phase !== "transcribing"
         ? "A recording is in progress or held. Stop or discard it before starting speech."
-        : undefined;
+        : undefined);
+  }
+
+  /** Why live mode must not start now: any attempt, recording, held recording, or transcription is still active. */
+  liveBlock(): string | undefined {
+    if (!this.active) return undefined;
+    return this.active.phase === "transcribing"
+      ? "A transcription is in progress. Wait for it to finish before starting live mode."
+      : "A recording is starting, in progress, or held. Stop or discard it before starting live mode.";
   }
 
   /**
    * A shortcut or `/talk [send|command|skill]`: start, stop and transcribe, or transcribe a held recording.
    * A press that only starts a recording carries no decision, except that the command and skill keys
-   * turn off streaming; the stopping `mode` is what counts.
+   * turn off streaming; the stopping `mode` is what counts. `fromShortcut` matters only while live mode is on.
    */
-  async press(ctx: TalkContext, mode: TalkMode): Promise<void> {
+  async press(ctx: TalkContext, mode: TalkMode, fromShortcut = false): Promise<void> {
     const ui = ctx.ui;
     if (ctx.mode !== "tui") {
       ui.notify(
@@ -81,6 +94,8 @@ export class TalkController {
       );
       return;
     }
+    // While live mode is on or starting, push-to-talk never starts or stops a recording.
+    if (this.live.phase !== "off") return this.live.press(ui, mode, fromShortcut);
     const active = this.active;
     if (!active) return this.start(ctx, mode);
     if (active.phase === "starting") {
@@ -123,7 +138,7 @@ export class TalkController {
    * recording, held or transcribing. The handle follows that recording until it ends.
    */
   startHold(ctx: TalkContext): HoldHandle | undefined {
-    if (this.active || ctx.mode !== "tui") return undefined;
+    if (this.active || this.live.phase !== "off" || ctx.mode !== "tui") return undefined;
     const claim: Starting = { phase: "starting", cancel: new AbortController(), hold: undefined };
     const hold: HoldHandle = { context: ctx, target: claim, onRecorderRunning: undefined };
     claim.hold = hold;
@@ -144,6 +159,7 @@ export class TalkController {
   /** Pi refuses a prompt while it compacts the conversation, so a send must not start then. */
   setCompacting(compacting: boolean): void {
     this.delivery.compacting = compacting;
+    this.live.setCompacting(compacting);
   }
 
   /** Lifecycle cleanup: discards a recording or held audio and drops any transcript still due. */

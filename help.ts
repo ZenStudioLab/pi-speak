@@ -38,6 +38,7 @@ export async function buildHelp(
     "/talk send             start recording; run it again to stop, transcribe, and send the composer",
     "/talk command          start recording; run it again to stop and put the spoken command into the editor (nothing runs)",
     "/talk skill            start recording; run it again to stop and put the spoken skill into the editor (nothing runs)",
+    "/talk live             start live mode, or end it: ElevenLabs listens, each pause sends what you said to Pi as a message",
     "/talk provider [deepgram|elevenlabs|reset]  report or select the voice input provider for this session",
     "/talk help | ?         show this help",
     "",
@@ -51,6 +52,7 @@ export async function buildHelp(
     ...(holdSpace
       ? ["Space (input.holdSpace): hold Space to record and let go to send, as with the send key. Typing another key during a hold discards the recording; Escape does too."]
       : []),
+    "Live mode (/talk live): it uses ElevenLabs for listening and for speaking, whatever input.provider and the speech provider say. While it is on, everything the microphone hears streams to ElevenLabs and each pause sends one plain message to Pi (slash commands in it do not run; a draft in the composer is left alone). It ends on /talk live again, on an error, or after input.liveIdleMinutes (default 5) minutes of agent idleness. Push-to-talk keys, Space holds, and the /speak forms that speak are refused while it is on.",
     `Speech locale: ${locale}`,
     `Stop phrase: ${stopPhrase}`,
     "Stop phrase (input.stopOnPhrase, ElevenLabs only): say a phrase from input.stopPhrases as the last words before a pause of about 1 second to stop and send. While on, audio streams to ElevenLabs as you speak; Escape sends nothing but cannot recall audio already sent. A key or /talk still stops the recording and decides whether the text is sent.",

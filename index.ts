@@ -5,9 +5,10 @@ import type {
 import type { KeyId } from "@earendil-works/pi-tui";
 import { canonicalLocale, loadConfig, pushToTalkKeys, type Shortcuts } from "./config.ts";
 import { HoldSpace } from "./hold-space.ts";
+import { LiveSession } from "./live.ts";
 import { SELECTION_MESSAGES, selectSessionAnswer } from "./session.ts";
 import { SpeechController, type SpeakDeps } from "./speech-job.ts";
-import { TalkController } from "./talk.ts";
+import { TalkController, type SendMessage } from "./talk.ts";
 import { normalizeExplicitText, prepareAnswerText } from "./text.ts";
 import type { TranslationFailureRecord } from "./translation-failure.ts";
 
@@ -26,6 +27,7 @@ async function handleSpeak(
   args: string,
   ctx: ExtensionCommandContext,
   controller: SpeechController,
+  live: LiveSession,
   recordFailure: (record: TranslationFailureRecord) => void,
 ): Promise<void> {
   const ui = ctx.ui;
@@ -35,7 +37,7 @@ async function handleSpeak(
 
   if (word === "help" || word === "?") return controller.help(ui);
   if (word === "stop") return controller.stop(ui);
-  if (word === "status") return controller.status(ui);
+  if (word === "status") return controller.status(ui, () => live.phase);
   if (word === "quota") return controller.quota(ui);
   if (word === "provider") {
     const name = parts[1] as "elevenlabs" | "deepgram" | "reset" | undefined;
@@ -56,6 +58,10 @@ async function handleSpeak(
     word !== "replay"
   )
     return controller.help(ui);
+
+  // Every form from here on produces speech, which live mode refuses before any other check.
+  const liveBlock = live.speechBlock();
+  if (liveBlock) return ui.notify(liveBlock, "warning");
 
   let oneCommandLocale: string | undefined;
   if (word === "in") {
@@ -118,31 +124,33 @@ function speakLatestAnswer(
 
 /**
  * Registers `/speak`, `/talk`, every push-to-talk shortcut, four lifecycle handlers that can
- * only cancel this extension's own work, and three compaction handlers that only note whether Pi is
- * compacting. With `holdSpace`, it also subscribes the Space listener on each session start. Nothing
+ * only cancel this extension's own work or end live mode, and three compaction handlers that only
+ * note whether Pi is compacting. With `holdSpace`, it also subscribes the Space listener on each session start. Nothing
  * is read, spawned, or sent at registration.
  */
 export function registerSpeak(
   pi: ExtensionAPI,
   controller: SpeechController,
   talk: TalkController,
+  live: LiveSession,
   shortcuts: Shortcuts = DEFAULT_SHORTCUTS,
   holdSpace?: HoldSpace,
 ): void {
   pi.registerCommand("speak", {
     description: "Speak a Pi answer or supplied text (explicit request only)",
     handler: (args, ctx) =>
-      handleSpeak(args, ctx, controller, (record) =>
+      handleSpeak(args, ctx, controller, live, (record) =>
         pi.appendEntry("speak-translation-failure", record),
       ),
   });
   pi.registerCommand("talk", {
-    description: "Dictate into the composer by push-to-talk (`send` also sends it, `command` and `skill` fill in a spoken command or skill), or select the voice input provider",
+    description: "Dictate into the composer by push-to-talk (`send` also sends it, `command` and `skill` fill in a spoken command or skill), talk with Pi hands-free (`live`), or select the voice input provider",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/).filter(Boolean);
       if (parts.length === 0) return talk.press(ctx, "transcribe");
       if (parts.length === 1 && (parts[0] === "send" || parts[0] === "command" || parts[0] === "skill"))
         return talk.press(ctx, parts[0]);
+      if (parts.length === 1 && parts[0] === "live") return live.toggle(ctx);
       if (parts.length === 1 && (parts[0] === "help" || parts[0] === "?"))
         return controller.help(ctx.ui);
       if (parts.length > 2 || parts[0] !== "provider") return controller.help(ctx.ui);
@@ -155,28 +163,29 @@ export function registerSpeak(
   for (const key of shortcuts.send)
     pi.registerShortcut(key as KeyId, {
       description: "Start or stop push-to-talk voice input; stopping sends the transcribed message",
-      handler: (ctx) => talk.press(ctx, "send"),
+      handler: (ctx) => talk.press(ctx, "send", true),
     });
   for (const key of shortcuts.transcribe)
     pi.registerShortcut(key as KeyId, {
       description: "Start or stop push-to-talk voice input; stopping only adds the text to the composer",
-      handler: (ctx) => talk.press(ctx, "transcribe"),
+      handler: (ctx) => talk.press(ctx, "transcribe", true),
     });
 
   for (const key of shortcuts.command)
     pi.registerShortcut(key as KeyId, {
       description: "Start or stop push-to-talk voice input; stopping puts a spoken command into the editor (nothing runs)",
-      handler: (ctx) => talk.press(ctx, "command"),
+      handler: (ctx) => talk.press(ctx, "command", true),
     });
   for (const key of shortcuts.skill)
     pi.registerShortcut(key as KeyId, {
       description: "Start or stop push-to-talk voice input; stopping puts a spoken skill into the editor (nothing runs)",
-      handler: (ctx) => talk.press(ctx, "skill"),
+      handler: (ctx) => talk.press(ctx, "skill", true),
     });
 
   const reset = () => {
     controller.resetSession();
     talk.resetSession();
+    live.resetSession();
     holdSpace?.reset();
   };
   if (holdSpace) pi.on("session_start", (_event, ctx) => holdSpace.attach(ctx));
@@ -225,17 +234,15 @@ export default async function speak(
       }
     : DEFAULT_SHORTCUTS;
   const controller = new SpeechController(deps, shortcuts);
-  const talk = new TalkController(
-    deps,
-    controller,
-    (text, options) => pi.sendUserMessage(text, options),
-    shortcuts,
-    () => pi.getCommands(),
-  );
+  const sendMessage: SendMessage = (text, options) => pi.sendUserMessage(text, options);
+  // `talk` is built after `live` and consulted only when the user runs `/talk live`.
+  const live = new LiveSession(deps, controller, sendMessage, shortcuts, (): string | undefined => talk.liveBlock());
+  const talk = new TalkController(deps, controller, sendMessage, shortcuts, () => pi.getCommands(), live);
   registerSpeak(
     pi,
     controller,
     talk,
+    live,
     shortcuts,
     shortcuts.holdSpace ? new HoldSpace(talk, pushToTalkKeys(shortcuts)) : undefined,
   );

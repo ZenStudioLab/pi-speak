@@ -19,9 +19,10 @@ import type { SpawnFn } from "../audio.ts";
 import { pushToTalkKeys, type Shortcuts } from "../config.ts";
 import { HoldSpace, type HoldClock } from "../hold-space.ts";
 import { registerSpeak } from "../index.ts";
+import { LiveSession } from "../live.ts";
 import type { RealtimeSocket } from "../realtime.ts";
 import { SpeechController } from "../speech-job.ts";
-import { TalkController } from "../talk.ts";
+import { TalkController, type SendMessage } from "../talk.ts";
 import type { TranslationRegistry } from "../translation.ts";
 import type { TranslationFailureRecord } from "../translation-failure.ts";
 
@@ -123,6 +124,8 @@ export interface CtxOptions {
   registry?: TranslationRegistry;
   /** Leaves `ctx.model` undefined, as when no model is selected. */
   noModel?: boolean;
+  /** Read at each call, so a test can change the agent's state while the context is in use; wins over `idle`. */
+  isIdle?: () => boolean;
 }
 
 type Handler = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
@@ -155,6 +158,8 @@ export async function createHarness(
     holdClock?: HoldClock;
     /** Leaves each live transcription socket unopened until the test calls `open`. */
     holdSockets?: boolean;
+    /** The time and timers of live mode's idle limit; the system clock when omitted. */
+    liveClock?: Pick<HoldClock, "now" | "setTimer">;
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "speak-harness-"));
@@ -243,20 +248,24 @@ export async function createHarness(
   const hostErrors: string[] = [];
   /** What `pi.getCommands()` lists. */
   const listed: { name: string; source: string }[] = [...(options.commands ?? [])];
+  const sendMessage: SendMessage = (text, sendOptions) => {
+    if (sendOptions.expandPromptTemplates !== false) throw new Error("templates must not be expanded");
+    sent.push({ text, options: sendOptions, composerAtCall: editor.text });
+    if (options.sendThrows) throw new Error(options.sendThrows);
+    if (options.sendFailure) hostErrors.push(options.sendFailure);
+  };
+  // `talk` is built after `live` and consulted only when `/talk live` runs.
+  const live = new LiveSession(deps, controller, sendMessage, registered, (): string | undefined => talk.liveBlock(), options.liveClock);
   const talk = new TalkController(
     { ...deps, now: () => clock },
     controller,
-    (text, sendOptions) => {
-      if (sendOptions.expandPromptTemplates !== false) throw new Error("templates must not be expanded");
-      sent.push({ text, options: sendOptions, composerAtCall: editor.text });
-      if (options.sendThrows) throw new Error(options.sendThrows);
-      if (options.sendFailure) hostErrors.push(options.sendFailure);
-    },
+    sendMessage,
     registered,
     () => {
       if (options.commandListFailure) throw new Error("command list unavailable");
       return listed;
     },
+    live,
   );
   const commands = new Map<string, Handler>();
   const shortcuts = new Map<string, (ctx: ExtensionCommandContext) => Promise<void>>();
@@ -289,14 +298,17 @@ export async function createHarness(
   } as unknown as ExtensionAPI;
   let submitted = 0;
   const hold = options.holdClock && new HoldSpace(talk, pushToTalkKeys(registered), options.holdClock);
-  registerSpeak(api, controller, talk, registered, hold);
+  registerSpeak(api, controller, talk, live, registered, hold);
 
   const notices: { message: string; level?: string }[] = [];
   const statuses: (string | undefined)[] = [];
   const talkStatuses: (string | undefined)[] = [];
+  const liveStatuses: (string | undefined)[] = [];
   const keyListeners = new Set<(data: string) => { consume?: boolean } | undefined>();
   const widgets: { key: string; content: string[] | undefined }[] = [];
   let aborts = 0;
+  const statusSink = (key: string) =>
+    key === "speak-talk" ? talkStatuses : key === "speak-live" ? liveStatuses : statuses;
 
   async function run(args: string, ctxOptions: CtxOptions = {}) {
     const cwd = ctxOptions.cwd ?? dir;
@@ -315,14 +327,13 @@ export async function createHarness(
       ui: {
         notify: (message: string, level?: string) =>
           notices.push({ message, level }),
-        setStatus: (key: string, text: string | undefined) =>
-          (key === "speak-talk" ? talkStatuses : statuses).push(text),
+        setStatus: (key: string, text: string | undefined) => statusSink(key).push(text),
         setWidget: (key: string, content: string[] | undefined) => {
           if (options.widgetFailure) throw new Error("widget unavailable");
           widgets.push({ key, content });
         },
       },
-      isIdle: () => ctxOptions.idle ?? true,
+      isIdle: () => ctxOptions.isIdle?.() ?? ctxOptions.idle ?? true,
       hasPendingMessages: () => ctxOptions.pending ?? false,
       sessionManager,
       abort: () => aborts++,
@@ -340,8 +351,7 @@ export async function createHarness(
       modelRegistry: ctxOptions.registry,
       ui: {
         notify: (message: string, level?: string) => notices.push({ message, level }),
-        setStatus: (key: string, text: string | undefined) =>
-          (key === "speak-talk" ? talkStatuses : statuses).push(text),
+        setStatus: (key: string, text: string | undefined) => statusSink(key).push(text),
         setWidget: () => undefined,
         getEditorText: () => editor.text,
         setEditorText: (text: string) => {
@@ -352,7 +362,7 @@ export async function createHarness(
           return () => keyListeners.delete(listener);
         },
       },
-      isIdle: () => ctxOptions.idle ?? true,
+      isIdle: () => ctxOptions.isIdle?.() ?? ctxOptions.idle ?? true,
       hasPendingMessages: () => false,
       sessionManager: SessionManager.inMemory(cwd),
       abort: () => aborts++,
@@ -423,6 +433,7 @@ export async function createHarness(
     sent,
     hostErrors,
     talkStatuses,
+    liveStatuses,
     editor,
     keyListeners,
     shortcuts,
@@ -463,6 +474,7 @@ export async function createHarness(
     },
     messages: () => notices.map((notice) => notice.message).join("\n"),
     async cleanup() {
+      live.resetSession();
       talk.resetSession();
       controller.resetSession();
       await controller.whenIdle();

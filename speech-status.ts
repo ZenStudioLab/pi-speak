@@ -6,6 +6,7 @@ import {
   type SpeakConfig,
 } from "./config.ts";
 import type { AudioCache } from "./cache.ts";
+import type { LivePhase } from "./live.ts";
 import { findRecorder } from "./record.ts";
 import type { SpeakDeps, SpeakUi } from "./speech-job.ts";
 
@@ -14,11 +15,13 @@ export interface StatusState {
   speechProvider: SpeechProvider | undefined;
   inputProviderOverride: SpeechProvider | undefined;
   speechLocale: string | undefined;
-  /** The phase of the running speech job, or undefined when idle. */
-  jobPhase: string | undefined;
+  /** Read after the awaits below, so it is the phase when the report is written; undefined when idle. */
+  jobPhase: () => string | undefined;
+  /** Read like `jobPhase`. */
+  livePhase: () => LivePhase;
 }
 
-/** `/speak status`: redacted configuration, key presence, job state, and cache usage; no request is made. */
+/** `/speak status`: redacted configuration, key presence, job and live mode state, and cache usage; no request is made. */
 export async function reportStatus(
   deps: SpeakDeps,
   state: StatusState,
@@ -44,6 +47,10 @@ export async function reportStatus(
         },
       ),
     );
+    lines.push(
+      `live idle limit: ${loaded.config.input.liveIdleMinutes} minutes`,
+      `live listen while speaking: ${loaded.config.input.liveListenWhileSpeaking ? "on" : "off"}`,
+    );
     const cache = cacheFor(loaded.config);
     try {
       const stats = await cache.stats();
@@ -56,6 +63,6 @@ export async function reportStatus(
   } else {
     lines.push(`not configured: ${loaded.problem}`);
   }
-  lines.push(`job: ${state.jobPhase ?? "idle"}`);
+  lines.push(`live mode: ${state.livePhase()}`, `job: ${state.jobPhase() ?? "idle"}`);
   ui.notify(lines.join("\n"), "info");
 }

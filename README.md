@@ -1,6 +1,6 @@
 # Speak
 
-Hear a Pi answer in a configurable language (default `vi`), or speak text you type, through the selected speech provider. Dictate a prompt by push-to-talk: one key sends it to the agent as soon as it is transcribed, and a second key only adds the text to the composer for you to review. **The default key `alt+t` now sends; use `alt+shift+t` to review first.** Two more keys turn a spoken command or skill name into text in the editor (`alt+m`, `alt+i`), and an optional setting lets you hold Space to dictate. Nothing is translated, spoken, recorded, or sent anywhere unless you run `/speak`, run `/talk`, press a push-to-talk shortcut, or, with `input.holdSpace` on, hold Space. Loading, reloading, prompts, tools, and agent completion are silent.
+Hear a Pi answer in a configurable language (default `vi`), or speak text you type, through the selected speech provider. Dictate a prompt by push-to-talk: one key sends it to the agent as soon as it is transcribed, and a second key only adds the text to the composer for you to review. **The default key `alt+t` now sends; use `alt+shift+t` to review first.** Two more keys turn a spoken command or skill name into text in the editor (`alt+m`, `alt+i`), and an optional setting lets you hold Space to dictate. `/talk live` opens a hands-free voice conversation with ElevenLabs: each pause in your speech is sent to Pi as a message. Nothing is translated, spoken, recorded, or sent anywhere unless you run `/speak`, run `/talk`, run `/talk live`, press a push-to-talk shortcut, or, with `input.holdSpace` on, hold Space. Loading, reloading, prompts, tools, and agent completion are silent.
 
 `pi-speak` is a standalone Pi extension by ZenStudioLab. It is also included in [pi-toolset](https://github.com/ZenStudioLab/pi-toolset) as a submodule at `extensions/speak`. It is not published to npm: load it explicitly with `pi -e`, or install it from git with `pi install git:github.com/ZenStudioLab/pi-speak`. Design records (ADRs 0002–0008) and the OpenSpec changes behind it live in the [pi-toolset repository](https://github.com/ZenStudioLab/pi-toolset/tree/main/docs/adr).
 
@@ -47,7 +47,9 @@ Hear a Pi answer in a configurable language (default `vi`), or speak text you ty
        "holdSpace": false,
        "sendWhenBusy": "interrupt",
        "stopOnPhrase": false,
-       "stopPhrases": ["let's go"]
+       "stopPhrases": ["let's go"],
+       "liveIdleMinutes": 5,
+       "liveListenWhileSpeaking": false
      },
      "locale": "vi",
      "translation": {
@@ -67,7 +69,7 @@ Hear a Pi answer in a configurable language (default `vi`), or speak text you ty
 
    **What is required.** Only the selected provider's voice settings are needed: `providers.elevenlabs.voiceId` and `modelId`, or `providers.deepgram.voice` (an Aura voice whose last segment is its language, such as `aura-2-thalia-en`). Everything else has a default, and `translation` is unconfigured by default.
 
-   **Defaults.** `provider` is `elevenlabs`. The ElevenLabs `outputFormat` is `mp3_44100_128`, `voiceRevision` is `1`, and `sttModel` is `scribe_v2`; the Deepgram `sttModel` is `nova-3`. `input.provider` is `deepgram`, `input.maxSeconds` is `120` (range 1–300), `input.shortcut` (the key that sends) is `alt+t`, `input.transcribeShortcut` (the key that only transcribes) is `alt+shift+t`, `input.commandShortcut` is `alt+m`, `input.skillShortcut` is `alt+i`, `input.commandAliases` is empty (see [Voice commands and skills](#voice-commands-and-skills)), `input.holdSpace` is `false` (see [Hold Space to talk](#hold-space-to-talk)), `input.sendWhenBusy` is `interrupt` (or `wait`), `input.stopOnPhrase` is `false` and `input.stopPhrases` is `["let's go"]` (see [Spoken stop phrase](#spoken-stop-phrase)), and `input.language` is unset, so the provider detects the language. Each shortcut setting also accepts a list of 1 to 4 keys (see [Extra shortcut keys](#extra-shortcut-keys)), and no key may appear twice across all four shortcut settings, ignoring case. `locale` is `vi`, `hardLimitChars` is `10000` (it may lower, never raise, a provider's limit), `requestTimeoutMs` is `45000`, and the player and cache are as shown. Unknown keys are rejected, so a pasted secret is refused rather than stored.
+   **Defaults.** `provider` is `elevenlabs`. The ElevenLabs `outputFormat` is `mp3_44100_128`, `voiceRevision` is `1`, and `sttModel` is `scribe_v2`; the Deepgram `sttModel` is `nova-3`. `input.provider` is `deepgram`, `input.maxSeconds` is `120` (range 1–300), `input.shortcut` (the key that sends) is `alt+t`, `input.transcribeShortcut` (the key that only transcribes) is `alt+shift+t`, `input.commandShortcut` is `alt+m`, `input.skillShortcut` is `alt+i`, `input.commandAliases` is empty (see [Voice commands and skills](#voice-commands-and-skills)), `input.holdSpace` is `false` (see [Hold Space to talk](#hold-space-to-talk)), `input.sendWhenBusy` is `interrupt` (or `wait`), `input.stopOnPhrase` is `false` and `input.stopPhrases` is `["let's go"]` (see [Spoken stop phrase](#spoken-stop-phrase)), `input.liveIdleMinutes` is `5` (range 1–60) and `input.liveListenWhileSpeaking` is `false` (see [Live conversation](#live-conversation)), and `input.language` is unset, so the provider detects the language. Each shortcut setting also accepts a list of 1 to 4 keys (see [Extra shortcut keys](#extra-shortcut-keys)), and no key may appear twice across all four shortcut settings, ignoring case. `locale` is `vi`, `hardLimitChars` is `10000` (it may lower, never raise, a provider's limit), `requestTimeoutMs` is `45000`, and the player and cache are as shown. Unknown keys are rejected, so a pasted secret is refused rather than stored.
 
    **Voice revision.** Raise `providers.elevenlabs.voiceRevision` whenever you change or re-clone the voice behind the same ID, so older cached clips are not reused.
 
@@ -102,6 +104,7 @@ Invalid configuration is reported when you use `/speak`, `/speak status`, or voi
 | `/speak help` or `/speak ?` | Show the combined help. |
 | `/talk` | Start recording; run it again to stop and transcribe only. Nothing is sent. Same as `alt+shift+t`. |
 | `/talk send` | Start recording; run it again to stop, transcribe, and **send** the composer. Same as `alt+t`. |
+| `/talk live` | Start live mode, or end it. See [Live conversation](#live-conversation). |
 | `/talk provider [deepgram\|elevenlabs\|reset]` | Report or select the voice-input provider for this session. |
 | `/talk help` or `/talk ?` | Show the same combined help as `/speak help`. |
 | `/talk command` | Start recording; run it again to stop and put the spoken command into the editor. Nothing runs. Same as `alt+m`. |
@@ -239,6 +242,29 @@ Optionally, end a dictation by voice: say a phrase such as "let's go" as the las
 
 **Failures.** An authentication error, quota or rate limit, size limit, session time limit, any other provider error, a connection that does not open within `requestTimeoutMs`, a final text that does not arrive in time, a recorder that fails while recording, or an unexpected close ends the recording with a sanitized message naming the class. Text already received is added to the composer without sending it. There is no retry, no reconnect, and no fallback to the one-shot upload.
 
+### Live conversation
+
+`/talk live` starts a hands-free conversation: it opens the microphone and keeps it open, and each pause in your speech is sent to Pi as a message, until you run `/talk live` again. Live mode starts only when you run `/talk live`. Loading, reloading, prompts, tools, and agent completion never start it, and it does not survive a reload, a restart, or a session change (new session, fork, tree navigation). It works only in the interactive terminal.
+
+**ElevenLabs in both directions.** Live mode listens with ElevenLabs live transcription (model `scribe_v2_realtime`, the connection the stop phrase uses) and speaks with ElevenLabs in your configured voice, whatever `input.provider`, `provider`, and their session overrides select. Deepgram is not used. The start needs `ELEVENLABS_API_KEY`, a valid configuration (including `providers.elevenlabs.voiceId` and `modelId`), a recording tool, and the audio player; if a check fails the command names the problem and nothing opens. It also refuses to start while a push-to-talk recording, a recording held at the time cap, or a transcription is active, and it stops this extension's own speech before it opens the microphone. The recorder starts only after the connection opens, and a connection that does not open ends the start with a message and no retry. The start message says that live mode uses ElevenLabs, whether the spoken language is detected for each turn or fixed to `input.language`, the key that cuts Pi off, and that `/talk live` ends it.
+
+**How turns are sent.** Each segment ElevenLabs settles after about one second of silence is one turn. A turn with no letter or digit, such as `...`, is dropped without a message. Every other turn, however short ("yes", "ừ"), is sent to Pi as one plain user message, saved in the session like a typed one. Slash commands, prompt templates, and skill commands in it are **not** run, and the spoken stop phrases have no effect. The composer is never read, changed, or sent: a half-typed draft stays where it is. When the agent is idle the turn starts a run; when it is working, `input.sendWhenBusy`, read when the turn is sent, decides: `interrupt` (default) delivers it to the running turn at once, `wait` queues it until the run ends. If Pi would refuse the message (no model selected, or the conversation is being compacted), or the send call fails, the turn is added to the composer instead, a message says why, and live mode stays on. A pause longer than a second can split one thought into two turns; while Pi is working, the second turn steers the same run.
+
+**While live mode is on.** A status line shows that live mode is on, the key that cuts Pi off, and that `/talk live` ends it. Push-to-talk is unavailable: the transcribe-only, command, and skill keys, `/talk`, `/talk send`, `/talk command`, and `/talk skill` are refused with a message that names `/talk live` (the send key too while live mode is starting), and Space holds are busy, so Spaces keep typing. `/speak`, `/speak original`, `/speak in`, `/speak text`, and `/speak replay` are refused and make no request. `/speak stop`, `/speak status`, `/speak quota`, `/speak provider`, `/speak locale`, `/talk provider`, and help keep working; a provider change applies to push-to-talk and `/speak` after live mode ends. Escape reaches Pi as usual. Running `/talk live` while it is starting cancels the start.
+
+**Ending.** Live mode ends on `/talk live`, on the idle limit, on a provider error or an unexpected close of the connection, when the recorder exits on its own, and on session replacement, fork, tree navigation, reload, and shutdown. Ending stops the recorder and closes the connection. Except on shutdown and session changes, a message says why. Nothing retries, reconnects, or falls back to another provider.
+
+**Settings.** Both live in the `input` block and are checked when you run `/talk live`; an invalid value is a configuration error and live mode does not start.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `input.liveIdleMinutes` | `5` (integer 1–60) | Live mode ends, with a message, after this many minutes in a row in which the agent was idle and no turn was sent. Agent work does not count, and the limit is checked every 15 seconds, so it can end up to 15 seconds late. |
+| `input.liveListenWhileSpeaking` | `false` | `false` mutes the microphone while Pi speaks. `true` keeps sending audio during playback; it needs headphones or system echo cancellation, because otherwise Pi's own voice can be heard as speech. |
+
+`/speak status` shows whether live mode is on and both effective settings.
+
+**Privacy and cost.** While live mode is on, everything the microphone hears, except during muted playback, streams to ElevenLabs. Each turn becomes a user message saved in the session like a typed one. The text Pi chooses to speak is sent to ElevenLabs for synthesis, and its audio is cached like `/speak` clips. This is not a zero-retention guarantee, and ending live mode is the way to stop streaming. The key is read only from the environment and never written to configuration, cache, logs, notifications, process arguments, or the recorder's or player's environment. Microphone audio is neither logged nor stored, transcripts are kept only in the messages sent and the composer fallback above, and warnings never repeat what you said. The connection stays open, and may be billed, for as long as live mode is on, so the idle limit and `/talk live` bound the cost; how ElevenLabs bills live transcription, by connection time or by audio sent, has not been checked, so assume it can be billed for as long as the connection is open. `/speak quota` is the only account view.
+
 ## Provider behavior and limits
 
 ElevenLabs uses the configured voice, model, and output format. Deepgram uses `/v1/speak` with the configured Aura voice and MP3. Deepgram accepts at most 2,000 characters per request; ElevenLabs accepts at most 10,000, or a lower configured `hardLimitChars`. Text is refused rather than truncated, split, retried, or sent to another provider.
@@ -257,13 +283,13 @@ Generated clips are stored under `$XDG_CACHE_HOME/pi-speak` (or `~/.cache/pi-spe
 
 Prepared text is sent to the selected speech provider on every audio-cache miss. Neither ElevenLabs' nor Deepgram's standard tier is a zero-retention guarantee. Translation may also be separately billed. After a timeout it is unknown whether an attempt was billed; there are no automatic retries or fallbacks. Cached audio can be sensitive even with private file permissions.
 
-Each recording you send goes to the selected voice-input provider; see [Voice input](#voice-input).
+Each recording you send goes to the selected voice-input provider; see [Voice input](#voice-input). In live mode the microphone streams to ElevenLabs for as long as it is on; see [Live conversation](#live-conversation).
 
 The provider keys remain in the Pi process environment. Same-user processes and other Pi extensions run with Pi's permissions and may read that environment, this configuration, or the cache. Do not speak credentials or confidential text.
 
 ## Not in this version
 
-`/speak summary`, confirmation prompts, secret-pattern blocking, cache clearing, and local usage accounting are not available. Voice input has no silence detection on this machine, no partial text, and no open microphone. A spoken command or skill goes into the editor and never runs by itself, and the only spoken action is the optional stop phrase, which works with ElevenLabs only.
+`/speak summary`, confirmation prompts, secret-pattern blocking, cache clearing, and local usage accounting are not available. Push-to-talk voice input has no silence detection on this machine, no partial text, and no open microphone; only `/talk live` keeps the microphone open until you end it. A spoken command or skill goes into the editor and never runs by itself, and the only spoken actions are the optional stop phrase and live mode's turns, which work with ElevenLabs only; a live turn is sent as an ordinary message and never runs a command.
 
 ## Development
 

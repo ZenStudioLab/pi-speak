@@ -17,6 +17,7 @@ import {
   type SpeechProvider,
 } from "./config.ts";
 import { redact } from "./elevenlabs.ts";
+import type { LivePhase } from "./live.ts";
 import { QuotaLookup } from "./quota-lookup.ts";
 import { buildHelp } from "./help.ts";
 import type { WebSocketFn } from "./realtime.ts";
@@ -242,14 +243,15 @@ export class SpeechController {
     this.quotaLookup.start(ui);
   }
 
-  status(ui: SpeakUi): Promise<void> {
+  status(ui: SpeakUi, livePhase: () => LivePhase): Promise<void> {
     return reportStatus(
       this.deps,
       {
         speechProvider: this.speechProviderOverride,
         inputProviderOverride: this.inputProviderOverride,
         speechLocale: this.speechLocaleOverride,
-        jobPhase: this.job?.phase,
+        jobPhase: () => this.job?.phase,
+        livePhase,
       },
       (config) => this.cacheFor(config),
       ui,

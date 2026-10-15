@@ -177,7 +177,7 @@ test("/speak help and /talk help, and their ? short form, show the same text wit
     "/speak ", "/speak original", "/speak in <tag>", "/speak text <text>", "/speak stop",
     "/speak replay", "/speak status", "/speak quota", "/speak provider [elevenlabs|deepgram|reset]",
     "/speak locale [<tag>|reset]", "/speak help | ?", "/talk ", "/talk send", "/talk command", "/talk skill",
-    "/talk provider [deepgram|elevenlabs|reset]", "/talk help | ?",
+    "/talk live", "/talk provider [deepgram|elevenlabs|reset]", "/talk help | ?",
   ])
     assert.ok(speakHelp!.includes(form), form);
   assert.match(speakHelp!, /alt\+t \/ alt\+y sends: .*same as \/talk send/);
@@ -587,4 +587,46 @@ test("the session locale is kept when the configuration cannot be read, and the 
   assert.match(h.notices.at(-1)!.message, /^not configured: no configuration file/);
   await h.run("locale en");
   assert.equal(h.notices.at(-1)!.message, "speech locale: en (session override)");
+});
+
+test("help describes /talk live: ElevenLabs in both directions, what is sent, the idle limit, and what is refused meanwhile", async () => {
+  const h = await harness();
+  await h.run("help");
+  const help = h.notices.at(-1)!.message;
+  assert.match(help, /^\/talk live +start live mode, or end it:/m);
+  assert.match(help, /uses ElevenLabs for listening and for speaking, whatever input\.provider and the speech provider say/);
+  assert.match(help, /everything the microphone hears streams to ElevenLabs/);
+  assert.match(help, /after input\.liveIdleMinutes \(default 5\) minutes of agent idleness/);
+  assert.match(help, /Push-to-talk keys, Space holds, and the \/speak forms that speak are refused/);
+  quiet(h);
+});
+
+for (const [name, input, idle, listen] of [
+  ["the defaults", undefined, "5 minutes", "off"],
+  ["configured values", { liveIdleMinutes: 12, liveListenWhileSpeaking: true }, "12 minutes", "on"],
+] as const)
+  test(`status shows live mode off and the effective live settings: ${name}`, async () => {
+    const h = await harness({ config: { ...VALID_CONFIG, input } });
+    await h.run("status");
+    const text = h.notices.at(-1)!.message;
+    assert.match(text, /^live mode: off$/m);
+    assert.ok(text.includes(`live idle limit: ${idle}`));
+    assert.ok(text.includes(`live listen while speaking: ${listen}`));
+    quiet(h);
+  });
+
+test("status reads the job phase when the report is written, not when the command started", async () => {
+  const h = await harness();
+  h.setFetch(
+    (call) =>
+      new Promise<Response>((_, reject) =>
+        call.init.signal?.addEventListener("abort", () => reject(new Error("cancelled"))),
+      ),
+  );
+  await h.run("text hello");
+  await h.until(() => h.fetchCalls.length === 1);
+  const reported = h.run("status");
+  h.controller.stop({ notify: () => undefined });
+  await reported;
+  assert.match(h.notices.at(-1)!.message, /^job: idle$/m);
 });
