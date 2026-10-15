@@ -4,6 +4,7 @@ import {
   matchesLiveStopPhrase,
   matchStopPhrase,
   openRealtime,
+  primarySubtags,
   realtimeUrl,
   type RealtimeFailure,
   type RealtimeSession,
@@ -14,7 +15,7 @@ import { FakeSocket } from "./harness.ts";
 const KEY = "eleven-secret-key-456";
 
 /** Starts opening a session on a fake socket; `hold` leaves the socket unopened for the test to open. */
-function start(options: { language?: string; timeoutMs?: number; hold?: boolean; signal?: AbortSignal } = {}) {
+function start(options: { language?: string; pauseSeconds?: number; languages?: string[]; timeoutMs?: number; hold?: boolean; signal?: AbortSignal } = {}) {
   const sockets: FakeSocket[] = [];
   const webSocketFn: WebSocketFn = (url, init) => {
     const socket = new FakeSocket(url, init);
@@ -25,6 +26,8 @@ function start(options: { language?: string; timeoutMs?: number; hold?: boolean;
   const opening = openRealtime({
     apiKey: KEY,
     language: options.language,
+    pauseSeconds: options.pauseSeconds,
+    languages: options.languages,
     timeoutMs: options.timeoutMs ?? 1000,
     signal: options.signal ?? new AbortController().signal,
     webSocketFn,
@@ -61,6 +64,53 @@ test("the connection uses the fixed URL and query, and the key only in the xi-ap
   assert.deepEqual(socket.init, { headers: { "xi-api-key": KEY } });
   assert.ok(!socket.url.includes(KEY));
   assert.equal(realtimeUrl(undefined).includes("language_code"), false);
+});
+
+test("without a pause or languages the URL keeps the 1-second pause and sends no secondary_languages", () => {
+  const url = new URL(realtimeUrl("vi"));
+  assert.equal(url.searchParams.get("vad_silence_threshold_secs"), "1");
+  assert.equal(url.searchParams.has("secondary_languages"), false);
+  assert.equal(realtimeUrl("vi", undefined, []), realtimeUrl("vi"));
+});
+
+for (const [name, pause, expected] of [
+  ["2", 2, "2"],
+  ["the lower bound", 0.3, "0.3"],
+  ["the upper bound", 3, "3"],
+] as const)
+  test(`the pause ${name} becomes vad_silence_threshold_secs`, () => {
+    assert.equal(new URL(realtimeUrl(undefined, pause)).searchParams.get("vad_silence_threshold_secs"), expected);
+  });
+
+for (const [name, language, list, expected] of [
+  ["each language is its own repeated entry", undefined, ["vi", "en"], ["vi", "en"]],
+  ["tags are reduced to their primary subtag", undefined, ["en-US", "vi-VN"], ["en", "vi"]],
+  ["a subtag shared by two tags is sent once", undefined, ["en-US", "en-GB", "en"], ["en"]],
+  ["an empty list sends none", "vi", [], []],
+  ["the main language stays in language_code beside the list", "vi", ["en-US"], ["en"]],
+] as const)
+  test(`secondary_languages: ${name}`, () => {
+    const url = new URL(realtimeUrl(language, 2, list));
+    assert.deepEqual(url.searchParams.getAll("secondary_languages"), expected);
+    assert.equal(url.searchParams.get("language_code"), language ?? null);
+    assert.equal((url.search.match(/secondary_languages=/g) ?? []).length, expected.length, "repeated, not comma-separated");
+    assert.ok(!url.search.includes("%2C"), "no comma-joined value");
+    assert.ok(!url.href.includes(KEY));
+  });
+
+test("primarySubtags reduces tags to distinct primary subtags in order", () => {
+  assert.deepEqual(primarySubtags(["vi-VN", "en-US", "vi", "en"]), ["vi", "en"]);
+  assert.deepEqual(primarySubtags([]), []);
+});
+
+test("openRealtime passes the pause and languages to the connection, with the key only in the header", async () => {
+  const { opened, socket } = await connect({ language: undefined, pauseSeconds: 2, languages: ["vi", "en"] });
+  assert.ok(opened.ok);
+  const url = new URL(socket.url);
+  assert.equal(url.searchParams.get("vad_silence_threshold_secs"), "2");
+  assert.deepEqual(url.searchParams.getAll("secondary_languages"), ["vi", "en"]);
+  assert.equal(url.searchParams.has("language_code"), false);
+  assert.ok(!socket.url.includes(KEY));
 });
 
 test("a connection that does not open within the deadline fails as a timeout, is closed, and is not retried", async () => {

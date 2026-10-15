@@ -626,6 +626,19 @@ for (const [name, input, line] of [
     quiet(h);
   });
 
+test("help describes the live pause and languages: the defaults, the complete set without input.language, dropped speech, and push-to-talk", async () => {
+  const h = await harness();
+  await h.run("help");
+  const line = h.notices.at(-1)!.message.split("\n").find((text) => text.startsWith("Live pause and languages:"))!;
+  assert.ok(line, "a line about the settings");
+  assert.match(line, /input\.livePauseSeconds \(default 2, from 0\.3 to 3\)/);
+  assert.match(line, /input\.liveLanguages \(default \[\]/);
+  assert.match(line, /with input\.language unset the list is the complete set of languages heard/);
+  assert.match(line, /speech in any other language is dropped/);
+  assert.match(line, /Push-to-talk ignores both/);
+  quiet(h);
+});
+
 test("help describes Pi speaking in live mode: the cut-off key, /speak stop, the muted microphone, and input.liveListenWhileSpeaking with its headphones requirement", async () => {
   const h = await harness({ shortcuts: { send: ["ctrl+alt+s", "ctrl+alt+d"] } });
   await h.run("help");
@@ -639,9 +652,16 @@ test("help describes Pi speaking in live mode: the cut-off key, /speak stop, the
   quiet(h);
 });
 
-for (const [name, input, idle, listen] of [
-  ["the defaults", undefined, "5 minutes", "off"],
-  ["configured values", { liveIdleMinutes: 12, liveListenWhileSpeaking: true }, "12 minutes", "on"],
+for (const [name, input, idle, listen, pause, languages] of [
+  ["the defaults", undefined, "5 minutes", "off", "2 seconds", "none (not limited)"],
+  [
+    "configured values",
+    { liveIdleMinutes: 12, liveListenWhileSpeaking: true, livePauseSeconds: 0.5, liveLanguages: ["vi", "en-US"] },
+    "12 minutes",
+    "on",
+    "0.5 seconds",
+    "vi, en-US",
+  ],
 ] as const)
   test(`status shows live mode off and the effective live settings: ${name}`, async () => {
     const h = await harness({ config: { ...VALID_CONFIG, input } });
@@ -650,6 +670,8 @@ for (const [name, input, idle, listen] of [
     assert.match(text, /^live mode: off$/m);
     assert.ok(text.includes(`live idle limit: ${idle}`));
     assert.ok(text.includes(`live listen while speaking: ${listen}`));
+    assert.ok(text.includes(`live pause: ${pause}`));
+    assert.ok(text.includes(`live languages: ${languages}`));
     quiet(h);
   });
 

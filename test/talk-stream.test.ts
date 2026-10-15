@@ -48,6 +48,14 @@ async function stopLive(
   await h.until(() => h.talkStatuses.at(-1) === undefined);
 }
 
+test("the live pause and live languages do not reach push-to-talk: its connection keeps a 1-second pause and sends no secondary_languages", async () => {
+  const h = await harness({ config: liveConfig({ language: undefined, livePauseSeconds: 3, liveLanguages: ["vi", "en"] }) });
+  await startLive(h);
+  const url = new URL(h.sockets[0]!.url);
+  assert.equal(url.searchParams.get("vad_silence_threshold_secs"), "1");
+  assert.equal(url.searchParams.has("secondary_languages"), false);
+});
+
 test("with the stop phrase on, the connection opens before the recorder and carries the key only in its header", async () => {
   const h = await harness({ config: liveConfig(), holdSockets: true });
   const pressed = h.pressShortcut();

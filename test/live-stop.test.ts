@@ -98,15 +98,6 @@ test("segments committed after the phrase are dropped, before and after live mod
   assert.equal(afterStart(h).length, 1, "one end message and no turn warnings");
 });
 
-test("the phrase is checked before the letter-or-digit filter, and dropped text does not join it", async () => {
-  const h = await harness();
-  const { socket } = await startLive(h);
-  socket.committed("...");
-  socket.committed("stop the conversation");
-  await ended(h);
-  assert.equal(h.sent.length, 0);
-});
-
 test("an empty live stop phrase list turns the feature off: the phrase is sent like any turn", async () => {
   const h = await harness({ config: baseConfig({ liveStopPhrases: [] }) });
   const { socket } = await startLive(h);

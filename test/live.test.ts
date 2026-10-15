@@ -32,12 +32,18 @@ test("the start message names ElevenLabs, the language setting, the cut-off key,
   const detected = await harness({ config: baseConfig({ language: undefined }) });
   await startLive(detected);
   assert.match(detected.notices[0]!.message, /ElevenLabs/);
-  assert.match(detected.notices[0]!.message, /detected for each turn/);
+  assert.match(detected.notices[0]!.message, /The spoken language is detected for each turn among any language\./);
   assert.match(detected.notices[0]!.message, /alt\+t cuts Pi off/);
   assert.match(detected.notices[0]!.message, /\/talk live ends live mode/);
   const fixed = await harness();
   await startLive(fixed);
-  assert.match(fixed.notices[0]!.message, /fixed to vi/);
+  assert.match(fixed.notices[0]!.message, /The spoken language is fixed to vi\./);
+  const limited = await harness({ config: baseConfig({ language: undefined, liveLanguages: ["vi", "en-US"] }) });
+  await startLive(limited);
+  assert.match(limited.notices[0]!.message, /The spoken language is limited to vi, en\./);
+  const plus = await harness({ config: baseConfig({ language: "vi", liveLanguages: ["en-US", "vi-VN"] }) });
+  await startLive(plus);
+  assert.match(plus.notices[0]!.message, /The spoken language is limited to vi, en\./);
 });
 
 test("the connection uses the existing realtime parameters, with the key only in its header, and the recorder streams without it", async () => {
@@ -49,7 +55,7 @@ test("the connection uses the existing realtime parameters, with the key only in
     model_id: "scribe_v2_realtime",
     audio_format: "pcm_16000",
     commit_strategy: "vad",
-    vad_silence_threshold_secs: "1",
+    vad_silence_threshold_secs: "2",
     language_code: "vi",
   });
   assert.deepEqual(socket.init, { headers: { "xi-api-key": API_KEY } });
@@ -57,6 +63,26 @@ test("the connection uses the existing realtime parameters, with the key only in
   const recorderEnv = h.spawnCalls[0]!.options.env as Record<string, string | undefined>;
   assert.ok(!Object.values(recorderEnv).includes(API_KEY), "the recorder never sees the key");
   assert.ok(!h.spawnCalls[0]!.args.includes(API_KEY));
+});
+
+test("the connection live mode opens carries the configured pause and one secondary_languages entry per distinct language", async () => {
+  const h = await harness({
+    config: baseConfig({ language: undefined, livePauseSeconds: 2.5, liveLanguages: ["vi", "en-US", "en-GB"] }),
+  });
+  const { socket } = await startLive(h);
+  const url = new URL(socket.url);
+  assert.equal(url.searchParams.get("vad_silence_threshold_secs"), "2.5");
+  assert.deepEqual(url.searchParams.getAll("secondary_languages"), ["vi", "en"]);
+  assert.equal(url.searchParams.has("language_code"), false);
+  assert.ok(!socket.url.includes(API_KEY));
+});
+
+test("with input.language set, the main language stays in language_code beside the list", async () => {
+  const h = await harness({ config: baseConfig({ language: "vi", liveLanguages: ["en-US"] }) });
+  const { socket } = await startLive(h);
+  const url = new URL(socket.url);
+  assert.equal(url.searchParams.get("language_code"), "vi");
+  assert.deepEqual(url.searchParams.getAll("secondary_languages"), ["en"]);
 });
 
 test("input.language is sent as language_code only when it is set", async () => {
@@ -122,6 +148,10 @@ const refusals: [string, Parameters<typeof harness>[0], RegExp][] = [
   ["a missing recording tool", { recorders: [] }, /No recording tool was found \(looked for rec, arecord, ffmpeg\)/],
   ["an invalid live setting", { config: baseConfig({ liveListenWhileSpeaking: "yes" }) }, /input\.liveListenWhileSpeaking must be true or false/],
   ["an invalid idle limit", { config: baseConfig({ liveIdleMinutes: 0 }) }, /input\.liveIdleMinutes/],
+  ["a pause above the provider limit", { config: baseConfig({ livePauseSeconds: 3.5 }) }, /input\.livePauseSeconds must be a number from 0\.3 to 3/],
+  ["a string pause", { config: baseConfig({ livePauseSeconds: "2" }) }, /input\.livePauseSeconds/],
+  ["a live language list that is a string", { config: baseConfig({ liveLanguages: "vi" }) }, /input\.liveLanguages must be a list/],
+  ["an invalid live language tag", { config: baseConfig({ liveLanguages: ["vi", "not a tag"] }) }, /input\.liveLanguages entries must be a valid BCP-47/],
   [
     "a missing ElevenLabs voice",
     { config: { ...baseConfig(), providers: { elevenlabs: { modelId: "eleven_flash_v2_5" } } } },

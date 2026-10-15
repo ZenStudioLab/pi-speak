@@ -94,16 +94,24 @@ const ERROR_CLASSES: Record<string, [RealtimeFailureKind, string]> = {
   error: ["provider", "reported an error (error)"],
 };
 
-/** `wss://…/realtime` with the fixed model, format, and 1-second pause; the key is never in the URL. */
-export function realtimeUrl(language: string | undefined): string {
+/** The realtime API takes ISO 639 codes, so only the primary subtag of a BCP-47 tag is sent; each distinct one once. */
+export const primarySubtags = (tags: readonly string[]): string[] => [
+  ...new Set(tags.map((tag) => tag.split("-")[0]!)),
+];
+
+/**
+ * `wss://…/realtime` with the fixed model and format; the key is never in the URL. The pause defaults to
+ * 1 second, and each language becomes one `secondary_languages` entry, which limits what the provider hears.
+ */
+export function realtimeUrl(language: string | undefined, pauseSeconds = 1, languages: readonly string[] = []): string {
   const query = new URLSearchParams({
     model_id: "scribe_v2_realtime",
     audio_format: "pcm_16000",
     commit_strategy: "vad",
-    vad_silence_threshold_secs: "1",
+    vad_silence_threshold_secs: String(pauseSeconds),
   });
-  // The realtime API takes ISO 639 codes, so only the primary subtag of the BCP-47 tag is sent.
-  if (language) query.set("language_code", language.split("-")[0]!);
+  if (language) query.set("language_code", primarySubtags([language])[0]!);
+  for (const code of primarySubtags(languages)) query.append("secondary_languages", code);
   return `${REALTIME_ORIGIN}?${query}`;
 }
 
@@ -261,6 +269,9 @@ class Session implements RealtimeSession {
 export function openRealtime(options: {
   apiKey: string;
   language: string | undefined;
+  /** Live mode only: the silence that ends a segment, and the languages heard besides `language`. */
+  pauseSeconds?: number;
+  languages?: readonly string[];
   timeoutMs: number;
   signal: AbortSignal;
   webSocketFn: WebSocketFn;
@@ -296,7 +307,7 @@ export function openRealtime(options: {
     if (signal.aborted) return onAbort();
     signal.addEventListener("abort", onAbort, { once: true });
     try {
-      socket = options.webSocketFn(realtimeUrl(options.language), {
+      socket = options.webSocketFn(realtimeUrl(options.language, options.pauseSeconds, options.languages), {
         headers: { "xi-api-key": apiKey },
       });
     } catch {

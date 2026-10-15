@@ -3,7 +3,7 @@ import { API_KEY_ENV, formatKeys, loadConfig, readProviderApiKey, type Shortcuts
 import { redact } from "./elevenlabs.ts";
 import { systemClock, type HoldClock } from "./hold-space.ts";
 import { LiveSpeech } from "./live-speech.ts";
-import { matchesLiveStopPhrase, nodeWebSocket, openRealtime, type RealtimeSession } from "./realtime.ts";
+import { matchesLiveStopPhrase, nodeWebSocket, openRealtime, primarySubtags, type RealtimeSession } from "./realtime.ts";
 import { RECORDER_TOOLS, findRecorder, startRecorder, type RecorderExit, type RecorderHandle } from "./record.ts";
 import type { SpeakAloudSwitch } from "./speak-aloud.ts";
 import type { SpeakDeps, SpeechController } from "./speech-job.ts";
@@ -200,6 +200,8 @@ export class LiveSession {
     const opened = await openRealtime({
       apiKey,
       language: input.language,
+      pauseSeconds: input.livePauseSeconds,
+      languages: input.liveLanguages,
       timeoutMs: requestTimeoutMs,
       signal: claim.cancel.signal,
       webSocketFn: this.deps.webSocketFn ?? nodeWebSocket,
@@ -259,9 +261,15 @@ export class LiveSession {
     this.tools.add();
     this.render();
     ui.notify(
-      `Live mode is on. It uses ElevenLabs to listen and to speak, and the microphone streams to ElevenLabs until you end it. The spoken language is ${input.language ? `fixed to ${input.language}` : "detected for each turn"}. ${formatKeys(this.shortcuts.send)} cuts Pi off; /talk live ends live mode.`,
+      `Live mode is on. It uses ElevenLabs to listen and to speak, and the microphone streams to ElevenLabs until you end it. The spoken language is ${this.languagesHeard(input.language, input.liveLanguages)}. ${formatKeys(this.shortcuts.send)} cuts Pi off; /talk live ends live mode.`,
       "info",
     );
+  }
+
+  /** Which languages the connection listens for: any, one, or only those listed (the provider drops the rest). */
+  private languagesHeard(language: string | undefined, listed: readonly string[]): string {
+    if (listed.length === 0) return language ? `fixed to ${language}` : "detected for each turn among any language";
+    return `limited to ${primarySubtags(language ? [language, ...listed] : listed).join(", ")}`;
   }
 
   private cutOffByVoice(on: On): void {

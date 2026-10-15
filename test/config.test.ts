@@ -293,6 +293,15 @@ for (const [name, input] of [
   ["a live stop phrase over 40 characters", { ...valid, input: { liveStopPhrases: ["x".repeat(41)] } }],
   ["a live stop phrase with no letter or digit", { ...valid, input: { liveStopPhrases: ["stop", "..."] } }],
   ["a non-string live stop phrase", { ...valid, input: { liveStopPhrases: [5] } }],
+  ["a livePauseSeconds of 0.2", { ...valid, input: { livePauseSeconds: 0.2 } }],
+  ["a livePauseSeconds of 3.5", { ...valid, input: { livePauseSeconds: 3.5 } }],
+  ["a string livePauseSeconds", { ...valid, input: { livePauseSeconds: "2" } }],
+  ["a non-finite livePauseSeconds", { ...valid, input: { livePauseSeconds: Number.NaN } }],
+  ["liveLanguages that is not a list", { ...valid, input: { liveLanguages: "vi" } }],
+  ["an invalid liveLanguages tag", { ...valid, input: { liveLanguages: ["vi", "not a tag"] } }],
+  ["an empty liveLanguages tag", { ...valid, input: { liveLanguages: [""] } }],
+  ["a non-string liveLanguages tag", { ...valid, input: { liveLanguages: [5] } }],
+  ["more than 10 liveLanguages", { ...valid, input: { liveLanguages: Array.from({ length: 11 }, () => "vi") } }],
   ["a command key equal to a send key", { ...valid, input: { commandShortcut: "alt+t" } }],
   ["a skill key equal to the command default", { ...valid, input: { skillShortcut: "alt+m" } }],
   ["a send key equal to the skill default", { ...valid, input: { shortcut: "alt+i" } }],
@@ -317,7 +326,7 @@ for (const [name, input] of [
   test(`rejects ${name} input setting`, () => {
     const result = parseConfig(input);
     assert.ok(!result.ok);
-    assert.match(result.problem, /input\.(maxSeconds|language|sendWhenBusy|transcribeShortcut|shortcut|stopOnPhrase|stopPhrases|commandShortcut|skillShortcut|commandAliases|holdSpace|liveIdleMinutes|liveListenWhileSpeaking|liveStopPhrases)/);
+    assert.match(result.problem, /input\.(maxSeconds|language|sendWhenBusy|transcribeShortcut|shortcut|stopOnPhrase|stopPhrases|commandShortcut|skillShortcut|commandAliases|holdSpace|liveIdleMinutes|liveListenWhileSpeaking|liveStopPhrases|livePauseSeconds|liveLanguages)/);
   });
 }
 
@@ -372,6 +381,32 @@ for (const [name, phrases, expected] of [
     const result = parseConfig({ ...valid, input: { liveStopPhrases: phrases } });
     assert.ok(result.ok);
     assert.deepEqual(result.config.input.liveStopPhrases, expected);
+  });
+
+test("livePauseSeconds defaults to 2 and liveLanguages to an empty list", () => {
+  const result = parseConfig(valid);
+  assert.ok(result.ok);
+  assert.equal(result.config.input.livePauseSeconds, 2);
+  assert.deepEqual(result.config.input.liveLanguages, []);
+});
+
+for (const pause of [0.3, 1, 3])
+  test(`livePauseSeconds accepts ${pause}`, () => {
+    const result = parseConfig({ ...valid, input: { livePauseSeconds: pause } });
+    assert.ok(result.ok);
+    assert.equal(result.config.input.livePauseSeconds, pause);
+  });
+
+for (const [name, tags, expected] of [
+  ["an empty list", [], []],
+  ["two tags", ["vi", "en"], ["vi", "en"]],
+  ["a regional tag in canonical form", ["en-us"], ["en-US"]],
+  ["ten tags", Array.from({ length: 10 }, () => "vi"), Array.from({ length: 10 }, () => "vi")],
+] as const)
+  test(`liveLanguages accepts ${name}`, () => {
+    const result = parseConfig({ ...valid, input: { liveLanguages: tags } });
+    assert.ok(result.ok);
+    assert.deepEqual(result.config.input.liveLanguages, expected);
   });
 
 test("an unknown input key is still rejected beside the live settings", () => {

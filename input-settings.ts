@@ -32,6 +32,10 @@ export interface InputConfig {
   liveListenWhileSpeaking: boolean;
   /** Whole-turn phrases that end live mode when said; empty turns the feature off. */
   liveStopPhrases: string[];
+  /** Seconds of silence after which the provider ends a live turn. */
+  livePauseSeconds: number;
+  /** Languages live mode listens for, besides `language`; empty means no limit. */
+  liveLanguages: string[];
 }
 
 const DEFAULTS = {
@@ -48,6 +52,8 @@ const DEFAULTS = {
   liveIdleMinutes: 5,
   liveListenWhileSpeaking: false,
   liveStopPhrases: ["Dừng cuộc hội thoại", "Stop the conversation"],
+  livePauseSeconds: 2,
+  liveLanguages: [] as string[],
 } as const;
 
 const INPUT_KEYS = [
@@ -66,6 +72,8 @@ const INPUT_KEYS = [
   "liveIdleMinutes",
   "liveListenWhileSpeaking",
   "liveStopPhrases",
+  "livePauseSeconds",
+  "liveLanguages",
 ];
 const SHORTCUT_SETTINGS = ["shortcut", "transcribeShortcut", "commandShortcut", "skillShortcut"] as const;
 const MAX_ALIASES = 50;
@@ -91,6 +99,20 @@ function parseLiveStopPhrases(value: unknown): string[] {
       fail("input.liveStopPhrases entries must be strings of 1 to 40 characters with at least one letter or digit");
     return trimmed;
   });
+}
+
+/** The provider accepts a silence threshold of 0.3 to 3 seconds and refuses anything else. */
+function parseLivePauseSeconds(value: unknown): number {
+  if (typeof value !== "number" || !(value >= 0.3 && value <= 3))
+    fail("input.livePauseSeconds must be a number from 0.3 to 3");
+  return value;
+}
+
+/** 0 to 10 language tags, each valid as `input.language` is. */
+function parseLiveLanguages(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 10)
+    fail("input.liveLanguages must be a list of 0 to 10 language tags");
+  return value.map((tag) => parseLocale(tag, "input.liveLanguages entries"));
 }
 
 /** One key or a list of 1 to 4 keys, as a list. */
@@ -192,5 +214,7 @@ export function parseInput(value: unknown): InputConfig {
     ),
     liveListenWhileSpeaking,
     liveStopPhrases: parseLiveStopPhrases(input.liveStopPhrases ?? DEFAULTS.liveStopPhrases),
+    livePauseSeconds: parseLivePauseSeconds(input.livePauseSeconds ?? DEFAULTS.livePauseSeconds),
+    liveLanguages: parseLiveLanguages(input.liveLanguages ?? DEFAULTS.liveLanguages),
   };
 }
